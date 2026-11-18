@@ -162,8 +162,8 @@ curl -X POST "localhost:8000/api/export?fmt=xlsx" -F file=@my_export.csv -o repo
 
 ## 8. 내보내기
 
-- **Excel(.xlsx)** — `README` · `Summary` · `Quality` · `Conditions` · `Exposure` ·
-  `Comparison` · `Daily` · `Correlations` · `Readings` 시트
+- **Excel(.xlsx)** — `README` 시트 + 데이터 8개 시트(`Summary` · `Quality` · `Conditions` ·
+  `Exposure` · `Comparison` · `Daily` · `Correlations` · `Readings`)
 - **CSV** — 표준 테이블(UTF-8 BOM, Excel에서 한글 바로 열림) 또는 시트별 폴더
 - **JSON** — 분석 번들 전체(재현 가능한 메타데이터 포함)
 
