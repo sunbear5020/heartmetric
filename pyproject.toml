@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heartmetric"
+version = "0.1.0"
+description = "HEARTMETRIC — Environmental Cardiovascular Response Platform: clean-room analysis of cuff blood pressure, wearable HR/HRV and environmental exposure."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "FEI · HEL Lab, Gyeongsang National University", email = "bkim5020@gnu.ac.kr" },
+]
+keywords = [
+  "blood pressure",
+  "heart rate variability",
+  "forest healing",
+  "environmental exposure",
+  "digital health",
+  "open source",
+]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+  "Intended Audience :: Science/Research",
+]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.9"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.urls]
+Homepage = "https://sunbear5020.github.io/heartmetric/"
+Repository = "https://github.com/sunbear5020/heartmetric"
+"Lab" = "https://sunbear5020.github.io/hel-fei-site/"
+
+[project.scripts]
+heartmetric = "heartmetric_core.__main__:main"
+
+[tool.setuptools]
+packages = ["heartmetric_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
