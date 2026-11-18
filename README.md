@@ -176,7 +176,9 @@ CSV/JSON 업로드, 합성 데모 원클릭, 요약 카드, 조건 비교표, SB
 
 워크벤치 원본은 **이 저장소의 `web/` 폴더**에 함께 들어 있습니다
 (`web/index.html` · `web/styles.css` · `web/app.js` — 라이브 사이트와 같은 파일).
-설치 없이 내 컴퓨터에서 띄우려면:
+
+- **라이브**: <https://sunbear5020.github.io/heartmetric/>
+- **로컬 실행** (설치 없이 내 컴퓨터에서 띄우기): 아래 두 줄
 
 ```bash
 cd web
