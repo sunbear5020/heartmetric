@@ -174,6 +174,19 @@ CSV/JSON 업로드, 합성 데모 원클릭, 요약 카드, 조건 비교표, SB
 환경 상관 차트, CSV/JSON 다운로드. 파일은 페이지를 떠나지 않습니다.
 엔진과 같은 정의를 JavaScript로 옮겨 두어 같은 파일에서 같은 수치가 나옵니다.
 
+워크벤치 원본은 **이 저장소의 `web/` 폴더**에 함께 들어 있습니다
+(`web/index.html` · `web/styles.css` · `web/app.js` — 라이브 사이트와 같은 파일).
+설치 없이 내 컴퓨터에서 띄우려면:
+
+```bash
+cd web
+python3 -m http.server 8000
+# 브라우저에서 http://localhost:8000 접속 (파일은 서버로 전송되지 않습니다)
+```
+
+이 저장소의 `web/`을 GitHub Pages로 공개하려면 Settings → Pages → Source를
+`Deploy from a branch`, 브랜치 `main`, 폴더 `/web`으로 지정하면 됩니다.
+
 ## 10. 한계와 윤리
 
 - 커프 혈압은 간헐 측정입니다. 야간 하강률은 ABPM 수준의 연속 측정이 아니면
@@ -196,3 +209,12 @@ https://github.com/sunbear5020/heartmetric
 ```
 
 문의: 김건우 교수 · bkim5020@gnu.ac.kr · 경상국립대학교 농대2호관 452동 237호
+
+## 12. CI (GitHub Actions)
+
+세 파이썬 버전(3.10·3.11·3.12)에서 pytest와 CLI 스모크 테스트를 돌리는 워크플로를
+`.github/ci-workflow.yml.template`로 두었습니다. 이 환경의 GitHub 연결 권한이
+`.github/workflows/` 경로 쓰기를 허용하지 않아 템플릿으로 보관합니다.
+GitHub 웹에서 이 파일을 `.github/workflows/ci.yml`로 옮기면(내용 그대로)
+Actions가 다음 푸시부터 자동으로 돕니다. 로컬에서는 `python -m pytest`가 같은
+검사입니다.
