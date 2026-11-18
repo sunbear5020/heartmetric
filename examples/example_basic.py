@@ -33,9 +33,10 @@ def main() -> None:
     print(f"environmental stress index {summary['stress_index']['index']}")
 
     for row in bundle["comparison"]:
+        p_text = "p<0.0001" if (row["p_value"] or 1) < 0.0001 else f"p={row['p_value']}"
         print(
             f"{row['metric']:>5}: forest {row['mean_a']} vs urban {row['mean_b']} "
-            f"(Δ {row['diff']}, d={row['cohens_d']}, p={row['p_value']})"
+            f"(Δ {row['diff']}, d={row['cohens_d']}, {p_text})"
         )
 
     # 4) Export a co-author-ready workbook.
