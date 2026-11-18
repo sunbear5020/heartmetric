@@ -54,11 +54,11 @@ python -m heartmetric_core --demo -o report.xlsx
 
 ```
 rows: 70 / 71 · conditions: {'urban': 35, 'forest': 35}
-mean SBP/DBP: 129.1 / 81.0 mmHg · MAP 97.0 · PP 48.2
-HRV recovery index: 120.7 (enhanced recovery, baseline night)
-nocturnal dipping: 11.1% (normal dipping)
-environmental stress index: 38.3 (moderate)
-    sbp: 127.32 vs 130.85 (Δ -3.53, d=-0.51, p=0.0391)
+mean SBP/DBP: 128.7 / 80.8 mmHg · MAP 96.8 · PP 47.9
+HRV recovery index: 122.6 (enhanced recovery, baseline night)
+nocturnal dipping: 11.3% (normal dipping)
+environmental stress index: 38.1 (moderate)
+    sbp: 126.97 vs 130.58 (Δ -3.61, d=-0.51, p=0.0410)
   rmssd: 46.49 vs 40.71 (Δ 5.78, d=1.12, p<0.0001)
 ```
 
@@ -114,7 +114,7 @@ curl -X POST "localhost:8000/api/export?fmt=xlsx" -F file=@my_export.csv -o repo
 | `pm25`, `pm10` | 미세먼지 | µg/m³ |
 | `green_index` | 녹지지수(0–1, 0–100 스케일은 자동 변환) | — |
 | `forest` | 산림 여부(0/1) | — |
-| `activity`, `steps` | 활동 라벨·걸음 수 | — |
+| `activity`, `steps` | 활동 라벨(텍스트)·걸음 수 | — |
 | `flags` | QC 플래그(`sbp_range`, `sbp_le_dbp`, `wide_pulse_pressure` …) | — |
 
 `수축기`·`이완기`·`심박수`·`측정일시` 같은 한글 헤더, `systolic`/`pulse` 같은 영문
@@ -155,7 +155,7 @@ curl -X POST "localhost:8000/api/export?fmt=xlsx" -F file=@my_export.csv -o repo
 - 생리적 범위 밖 값(SBP 60–260, DBP 30–160, HR 25–220 …) → 제거 + 사유 기록
 - `SBP ≤ DBP` 모순 쌍 → 제거
 - 정확 중복·60초 이내 동일 재동기화 → 1건으로 축약
-- 결측률, 조건별 행 수, 관측 기간, 6시간 이상 공백(gap)
+- 결측률, 조건별 행 수, 관측 기간, 12시간 이상 공백(gap — 야간 공백은 기본적으로 제외)
 - 단위 불일치, RMSSD > SDNN 같은 경고
 
 삭제는 언제나 **개수와 사유**로 남습니다. 조용히 사라지는 값은 없습니다.

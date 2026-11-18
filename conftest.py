@@ -16,7 +16,8 @@ import pytest  # noqa: E402
 
 @pytest.fixture()
 def demo_frame():
-    """The synthetic 14-day series, anomalies included (the cleaner handles them)."""
-    from heartmetric_core import synthetic
+    """The synthetic 14-day series after QC (the frame the metrics see)."""
+    from heartmetric_core import cleaner, metrics, synthetic
 
-    return synthetic.generate()
+    report = cleaner.clean(synthetic.generate())
+    return metrics.add_derived(report.frame)

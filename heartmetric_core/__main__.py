@@ -58,10 +58,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"environmental stress index: {stress['index']} ({stress['band']})")
     for row in bundle.get("comparison", []):
         p_value = row.get("p_value")
-        p_text = "—" if p_value is None else ("<0.0001" if p_value < 0.0001 else f"{p_value:.4f}")
+        if p_value is None:
+            p_text = "p=—"
+        elif p_value < 0.0001:
+            p_text = "p<0.0001"
+        else:
+            p_text = f"p={p_value:.4f}"
         print(
             f"  {row['metric']:>5}: {row['mean_a']} vs {row['mean_b']} "
-            f"(Δ {row['diff']}, d={row['cohens_d']}, p={p_text})"
+            f"(Δ {row['diff']}, d={row['cohens_d']}, {p_text})"
         )
 
     written = exporter.save(bundle, args.out)

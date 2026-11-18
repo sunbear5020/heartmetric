@@ -32,7 +32,6 @@ PHYSIOLOGICAL_RANGES: Dict[str, tuple[float, float]] = {
     "pm10": (0.0, 1500.0),
     "green_index": (0.0, 1.0),
     "forest": (0.0, 1.0),
-    "activity": (0.0, 300.0),
     "steps": (0.0, 100000.0),
 }
 
@@ -41,7 +40,9 @@ PHYSIOLOGICAL_RANGES: Dict[str, tuple[float, float]] = {
 WIDE_PULSE_PRESSURE = 100.0
 
 #: Gaps longer than this are reported so a researcher knows a period is empty.
-DEFAULT_GAP_HOURS = 6.0
+#: 12 h keeps a normal overnight pause (cuff readings stop after the evening) from
+#: showing up as a coverage gap; continuous ABPM would use a shorter window.
+DEFAULT_GAP_HOURS = 12.0
 
 
 @dataclass

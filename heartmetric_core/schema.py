@@ -31,6 +31,9 @@ CONDITION = "condition"
 FLAGS = "flags"
 NOTES = "notes"
 
+#: Numeric measurement columns. ``activity`` is a text label ("walk", "night",
+#: "휴식") and is kept out of the numeric table so it is never counted as a
+#: missing measurement.
 METRIC_COLUMNS: List[str] = [
     "sbp",
     "dbp",
@@ -43,11 +46,12 @@ METRIC_COLUMNS: List[str] = [
     "pm10",
     "green_index",
     "forest",
-    "activity",
     "steps",
 ]
 
-STANDARD_COLUMNS: List[str] = [TIMESTAMP, SOURCE, CONDITION, *METRIC_COLUMNS, FLAGS, NOTES]
+ACTIVITY = "activity"
+
+STANDARD_COLUMNS: List[str] = [TIMESTAMP, SOURCE, CONDITION, *METRIC_COLUMNS, ACTIVITY, FLAGS, NOTES]
 
 #: Columns that must be numeric after loading.
 NUMERIC_COLUMNS: List[str] = [*METRIC_COLUMNS]

@@ -170,9 +170,9 @@ def generate(
 
     if include_anomalies and len(frame) >= 21:
         # 1) a device reading of zero (should be removed by the range check)
-        frame.loc[frame.index[5], ["sbp", "dbp"]] = [0.0, 0.0]
+        frame.loc[frame.index[2], ["sbp", "dbp"]] = [0.0, 0.0]
         # 2) an inverted cuff pair (diastolic above systolic)
-        frame.loc[frame.index[18], ["sbp", "dbp"]] = [78.0, 96.0]
+        frame.loc[frame.index[13], ["sbp", "dbp"]] = [78.0, 96.0]
         # 3) a duplicated sync one minute after the original reading
         position = min(30, len(frame) - 1)
         duplicate = frame.loc[[frame.index[position]]].copy()
