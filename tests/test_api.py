@@ -81,3 +81,28 @@ def test_export_json_and_csv():
 def test_bad_body_is_422():
     response = client.post("/api/analyze", json={"nothing": 1})
     assert response.status_code == 422
+
+
+def test_methodology_endpoint():
+    payload = client.get("/api/methodology").json()
+    assert payload["version"] == "0.2.0"
+    assert payload["indicators"]["sbp"]["kind"] == "measured"
+    assert payload["indicators"]["env_load"]["kind"] == "exploratory"
+
+
+def test_export_markdown():
+    frame = synthetic.generate(include_anomalies=False).head(20)
+    records = json.loads(frame.to_json(orient="records", date_format="iso"))
+    response = client.post("/api/export?fmt=md", json={"records": records})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert "HEARTMETRIC" in response.text
+
+
+def test_analyze_reports_paired_by():
+    cohort = synthetic.generate_cohort(subjects=4, days=4)
+    records = json.loads(cohort.to_json(orient="records", date_format="iso"))
+    response = client.post("/api/analyze", json={"records": records, "paired": True})
+    bundle = response.json()
+    assert bundle["meta"]["comparison"]["paired_by"] == "subject"
+    assert bundle["meta"]["schema_version"] == "0.2.0"

@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterable, List, Sequence
 import numpy as np
 import pandas as pd
 
-from .schema import CONDITION, FLAGS, METRIC_COLUMNS, TIMESTAMP
+from .schema import CONDITION, FLAGS, METRIC_COLUMNS, SUBJECT, TIMESTAMP
 
 #: Night window used for dipping and HRV recovery (local clock).
 DEFAULT_NIGHT = (22, 6)
@@ -22,7 +22,7 @@ REFERENCE = {
     "rmssd_ms": 50.0,      # RMSSD ~50 ms: typical healthy adult nightly average
     "hr_low": 55.0,        # bpm
     "hr_high": 95.0,       # bpm
-    "pm25_ugm3": 35.0,     # WHO interim target 1, 24-h mean
+    "pm25_ugm3": 35.0,     # WHO 2005 air-quality guideline, 24-h interim target 1
     "thermal_center_c": 22.0,
     "thermal_span_c": 15.0,
     "dipping_normal_pct": 15.0,
@@ -58,11 +58,44 @@ def mean_arterial_pressure(
 
 
 def add_derived(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy with ``map`` and ``pp`` columns added."""
+    """Return a copy with ``map``, ``pp`` and ``env_load`` columns added."""
     out = frame.copy()
     out["pp"] = pulse_pressure(out["sbp"], out["dbp"])
     out["map"] = mean_arterial_pressure(out["sbp"], out["dbp"])
+    out["env_load"] = environmental_load(out)
     return out
+
+
+def environmental_load(frame: pd.DataFrame) -> pd.Series:
+    """Per-row environmental load from environmental inputs only (0–1, exploratory).
+
+    Mean of the available components, each clamped to 0–1 so no single term can
+    dominate:
+
+    * particulate — PM2.5 / 35 µg/m³ (WHO 2005 24-h interim target 1)
+    * thermal     — |air temperature − 22 °C| / 15 °C
+    * greenery    — 1 − green index (a 0–1 NDVI-like index, 1 = full canopy)
+
+    It deliberately excludes blood pressure and HRV, which are outcomes here: a
+    composite that already contains SBP cannot be correlated with SBP without
+    circularity. Missing components are dropped, not imputed.
+    """
+    if frame is None or frame.empty:
+        return pd.Series(dtype=float)
+    components = []
+    if "pm25" in frame.columns:
+        values = pd.to_numeric(frame["pm25"], errors="coerce")
+        components.append((values / REFERENCE["pm25_ugm3"]).clip(0, 1))
+    if "temp_c" in frame.columns:
+        values = pd.to_numeric(frame["temp_c"], errors="coerce")
+        components.append(((values - REFERENCE["thermal_center_c"]).abs() / REFERENCE["thermal_span_c"]).clip(0, 1))
+    if "green_index" in frame.columns:
+        values = pd.to_numeric(frame["green_index"], errors="coerce")
+        components.append((1.0 - values).clip(0, 1))
+    if not components:
+        return pd.Series([np.nan] * len(frame), index=frame.index, dtype=float)
+    stacked = pd.concat(components, axis=1)
+    return stacked.mean(axis=1, skipna=True)
 
 
 def blood_pressure_load(
@@ -223,7 +256,7 @@ def environmental_stress_index(
     Components (weights in :data:`ENVIRONMENT_WEIGHTS`):
       * ``bp_load``          share of readings at or above 130/80 mmHg
       * ``hrv_suppression``  1 − RMSSD / 50 ms
-      * ``pm25``             mean PM2.5 / 35 µg/m³ (WHO interim target 1)
+      * ``pm25``             mean PM2.5 / 35 µg/m³ (WHO 2005 24-h interim target 1)
       * ``thermal``          |mean temperature − 22 °C| / 15 °C
       * ``hr_load``          mean HR on the 55–95 bpm span
     Components without data are dropped and the remaining weights renormalized.
@@ -310,6 +343,11 @@ def summarize(frame: pd.DataFrame) -> Dict[str, Any]:
                 {str(k): int(v) for k, v in frame[CONDITION].fillna("(unlabelled)").value_counts().items()}
                 if CONDITION in frame.columns
                 else {}
+            ),
+            "subjects": (
+                sorted({str(v) for v in frame[SUBJECT].dropna().unique()})
+                if SUBJECT in frame.columns
+                else []
             ),
         }
     )
@@ -410,7 +448,10 @@ def time_series(frame: pd.DataFrame) -> List[Dict[str, Any]]:
     """Row-wise series for charts (ISO timestamp, condition, metric values)."""
     if frame is None or frame.empty:
         return []
-    columns = [TIMESTAMP, CONDITION, "sbp", "dbp", "hr", "rmssd", "pm25", "temp_c", "green_index", FLAGS]
+    columns = [
+        TIMESTAMP, SUBJECT, CONDITION, "sbp", "dbp", "map", "pp", "hr", "rmssd", "sdnn",
+        "pm25", "temp_c", "green_index", "env_load", FLAGS,
+    ]
     present = [c for c in columns if c in frame.columns]
     working = frame[present].copy()
     working[TIMESTAMP] = pd.to_datetime(working[TIMESTAMP], errors="coerce")
@@ -426,6 +467,8 @@ def time_series(frame: pd.DataFrame) -> List[Dict[str, Any]]:
                 continue
             if column == CONDITION:
                 payload["condition"] = str(value)
+            elif column == SUBJECT:
+                payload["subject_id"] = str(value)
             elif column == FLAGS:
                 payload["flags"] = str(value)
             else:

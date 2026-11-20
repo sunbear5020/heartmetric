@@ -146,6 +146,19 @@ def hedges_g(group_a: Iterable[float], group_b: Iterable[float]) -> float:
     return float(d * correction)
 
 
+def _p_round(p: float, digits: int = 4) -> float | None:
+    """Round a p-value without ever reporting an exact zero.
+
+    A p of 0.00003 is not zero, and printing ``0.0`` would claim certainty the
+    test did not establish, so very small values keep three significant digits.
+    """
+    if p is None or not isinstance(p, (int, float)) or not math.isfinite(p):
+        return None
+    if p >= 10 ** (-digits):
+        return round(float(p), digits)
+    return float(f"{p:.3g}")
+
+
 def effect_size_label(d: float | None) -> str:
     if d is None or not isinstance(d, (int, float)) or not math.isfinite(d):
         return "—"
@@ -330,6 +343,211 @@ def bootstrap_mean_ci(
     return float(np.percentile(draws, 100 * alpha / 2)), float(np.percentile(draws, 100 * (1 - alpha / 2)))
 
 
+def cohens_dz(group_a: Iterable[float], group_b: Iterable[float]) -> float:
+    """Paired standardized effect size d_z = mean(a − b) / SD(a − b).
+
+    Reference: Cohen, J. (1988) *Statistical Power Analysis for the Behavioral
+    Sciences*, 2nd ed.; Lakens, D. (2013) Frontiers in Psychology 4:863 for the
+    distinction between d_z and d_av.
+    """
+    a = np.asarray(list(group_a), dtype=float)
+    b = np.asarray(list(group_b), dtype=float)
+    if a.size != b.size or a.size < 2:
+        return float("nan")
+    valid = np.isfinite(a) & np.isfinite(b)
+    diff = a[valid] - b[valid]
+    if diff.size < 2:
+        return float("nan")
+    spread = float(diff.std(ddof=1))
+    if spread == 0:
+        return float("nan")
+    return float(diff.mean() / spread)
+
+
+def sign_flip_permutation(
+    group_a: Iterable[float],
+    group_b: Iterable[float],
+    *,
+    n_permutations: int = 5000,
+    seed: int = 5020,
+) -> float:
+    """Two-sided sign-flip permutation p-value for a paired mean difference.
+
+    Under the null hypothesis the two conditions are exchangeable, so the sign
+    of each subject's difference is equally likely to be positive or negative.
+    The observed |mean difference| is compared with the distribution obtained by
+    randomly flipping the signs (deterministic seed, so a report can be rerun).
+    No distributional assumption is made.
+    """
+    a = np.asarray(list(group_a), dtype=float)
+    b = np.asarray(list(group_b), dtype=float)
+    if a.size != b.size or a.size == 0:
+        return float("nan")
+    valid = np.isfinite(a) & np.isfinite(b)
+    diff = a[valid] - b[valid]
+    if diff.size < 2:
+        return float("nan")
+    observed = abs(float(diff.mean()))
+    rng = np.random.default_rng(seed)
+    flips = rng.choice([-1.0, 1.0], size=(n_permutations, diff.size))
+    simulated = np.abs((flips * diff).mean(axis=1))
+    # +1 correction: the observed arrangement counts as one of the permutations.
+    return float((int((simulated >= observed - 1e-12).sum()) + 1) / (n_permutations + 1))
+
+
+def sign_test(group_a: Iterable[float], group_b: Iterable[float]) -> float:
+    """Two-sided exact sign test p-value for paired observations.
+
+    Counts how often a − b is positive and compares with Binomial(n, 0.5);
+    zero differences are dropped (the conventional conservative handling).
+    """
+    a = np.asarray(list(group_a), dtype=float)
+    b = np.asarray(list(group_b), dtype=float)
+    if a.size != b.size or a.size == 0:
+        return float("nan")
+    valid = np.isfinite(a) & np.isfinite(b)
+    diff = a[valid] - b[valid]
+    diff = diff[diff != 0]
+    n = int(diff.size)
+    if n == 0:
+        return float("nan")
+    positive = int((diff > 0).sum())
+    tail = sum(math.comb(n, k) for k in range(0, min(positive, n - positive) + 1))
+    return float(min(1.0, 2 * tail / 2**n))
+
+
+def wilcoxon_signed_rank(group_a: Iterable[float], group_b: Iterable[float]) -> tuple[float, float]:
+    """Two-sided Wilcoxon signed-rank test (normal approximation, tie corrected).
+
+    Requires enough pairs to use the normal approximation (n >= 10 after
+    dropping zero differences); for a small, assumption-light alternative use
+    :func:`sign_flip_permutation` or :func:`sign_test`.
+    """
+    a = np.asarray(list(group_a), dtype=float)
+    b = np.asarray(list(group_b), dtype=float)
+    if a.size != b.size or a.size == 0:
+        return float("nan"), float("nan")
+    valid = np.isfinite(a) & np.isfinite(b)
+    diff = a[valid] - b[valid]
+    diff = diff[diff != 0]
+    n = int(diff.size)
+    if n < 1:
+        return float("nan"), float("nan")
+    ranks = pd.Series(np.abs(diff)).rank(method="average").to_numpy()
+    w_plus = float(ranks[diff > 0].sum())
+    w = min(w_plus, n * (n + 1) / 2.0 - w_plus)
+    mean_w = n * (n + 1) / 4.0
+    _, counts = np.unique(np.abs(diff), return_counts=True)
+    tie_term = float(sum(c**3 - c for c in counts))
+    variance = n * (n + 1) * (2 * n + 1) / 24.0 - tie_term / 48.0
+    if variance <= 0:
+        return float(w), float("nan")
+    z = (w - mean_w + 0.5) / math.sqrt(variance)
+    p = 2.0 * (1.0 - normal_cdf(abs(z)))
+    return float(w), float(min(max(p, 0.0), 1.0))
+
+
+# ------------------------------------------------------- paired by subject
+
+
+def subject_pairs(
+    frame: pd.DataFrame,
+    metric: str,
+    *,
+    group_a: str = "forest",
+    group_b: str = "urban",
+    subject_column: str = "subject_id",
+    condition_column: str = "condition",
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Collapse each subject to one value per condition, keeping the pairing.
+
+    A subject with several readings under one condition contributes the mean of
+    those readings (a within-subject summary, not a pooled reading), so the
+    paired test compares subject-level responses rather than raw rows.
+    Subjects that appear under only one condition are excluded and counted.
+    """
+    empty = (np.array([]), np.array([]), [])
+    if frame is None or frame.empty:
+        return empty
+    for column in (metric, subject_column, condition_column):
+        if column not in frame.columns:
+            return empty
+    working = frame[[metric, subject_column, condition_column]].copy()
+    working[metric] = pd.to_numeric(working[metric], errors="coerce")
+    working = working.dropna(subset=[metric, subject_column, condition_column])
+    if working.empty:
+        return empty
+    grouped = working.groupby([subject_column, condition_column])[metric].mean().unstack()
+    if group_a not in grouped.columns or group_b not in grouped.columns:
+        return empty
+    paired = grouped[[group_a, group_b]].dropna()
+    return (
+        paired[group_a].to_numpy(dtype=float),
+        paired[group_b].to_numpy(dtype=float),
+        [str(s) for s in paired.index.tolist()],
+    )
+
+
+def paired_subject_compare(
+    frame: pd.DataFrame,
+    metric: str,
+    *,
+    group_a: str = "forest",
+    group_b: str = "urban",
+    subject_column: str = "subject_id",
+    condition_column: str = "condition",
+    alpha: float = 0.05,
+    n_permutations: int = 5000,
+) -> Dict[str, Any]:
+    """Paired comparison on subject-level means with t, permutation, sign test."""
+    a, b, subjects = subject_pairs(
+        frame,
+        metric,
+        group_a=group_a,
+        group_b=group_b,
+        subject_column=subject_column,
+        condition_column=condition_column,
+    )
+    if a.size < 2:
+        return {
+            "metric": metric,
+            "paired_by": "subject",
+            "n_subjects": int(a.size),
+            "available": False,
+            "reason": f"needs at least 2 subjects measured in both {group_a} and {group_b}",
+        }
+    base = paired_ttest(a, b, alpha).to_dict()
+    dz = cohens_dz(a, b)
+    _, wilcoxon_p = wilcoxon_signed_rank(a, b)
+    base.update(
+        {
+            "metric": metric,
+            "available": True,
+            "paired_by": "subject",
+            "n_subjects": int(a.size),
+            "n_a": int(a.size),
+            "n_b": int(b.size),
+            "mean_a": float(a.mean()),
+            "mean_b": float(b.mean()),
+            "cohens_dz": dz,
+            "effect_dz": effect_size_label(dz),
+            "permutation_p": sign_flip_permutation(a, b, n_permutations=n_permutations),
+            "sign_test_p": sign_test(a, b),
+            "wilcoxon_p": wilcoxon_p,
+            "subjects": subjects,
+        }
+    )
+    return base
+
+
+def _row_order_pairs(values_a: pd.Series, values_b: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    """Fallback pairing: observations in time order, truncated to the shorter side."""
+    a = values_a.to_numpy(dtype=float)
+    b = values_b.to_numpy(dtype=float)
+    n = int(min(a.size, b.size))
+    return a[:n], b[:n]
+
+
 def compare(
     group_a: Iterable[float],
     group_b: Iterable[float],
@@ -342,7 +560,32 @@ def compare(
     u, u_p = mann_whitney_u(group_a, group_b)
     payload = primary.to_dict()
     payload.update({"mann_whitney_u": u, "mann_whitney_p": u_p})
+    if paired:
+        payload["cohens_dz"] = cohens_dz(group_a, group_b)
+        payload["permutation_p"] = sign_flip_permutation(group_a, group_b)
+        payload["sign_test_p"] = sign_test(group_a, group_b)
     return payload
+
+
+def _count_subjects_in_both(
+    frame: pd.DataFrame,
+    subject_column: str,
+    condition_column: str,
+    group_a: str,
+    group_b: str,
+) -> int:
+    """Subjects that carry at least one row in each of the two conditions."""
+    if frame is None or frame.empty:
+        return 0
+    if subject_column not in frame.columns or condition_column not in frame.columns:
+        return 0
+    working = frame[[subject_column, condition_column]].dropna()
+    if working.empty:
+        return 0
+    both = working.groupby(subject_column)[condition_column].apply(
+        lambda values: {group_a, group_b} <= set(values.astype(str))
+    )
+    return int(both.sum()) if len(both) else 0
 
 
 def compare_table(
@@ -353,11 +596,37 @@ def compare_table(
     group_a: str = "forest",
     group_b: str = "urban",
     paired: bool = False,
+    paired_by: str = "auto",
+    subject_column: str = "subject_id",
 ) -> pd.DataFrame:
-    """Compare ``group_a`` against ``group_b`` for each metric present."""
+    """Compare ``group_a`` against ``group_b`` for each metric present.
+
+    ``paired_by``
+        * ``"auto"`` (default) — pair by subject when a subject column with at
+          least two subjects measured in both conditions exists, otherwise pair
+          observations in time order and say so in the ``paired_by`` column.
+        * ``"subject"`` — require subject pairing; metrics without it are skipped.
+        * ``"row"`` — time-order pairing of the two value lists.
+    """
     if frame is None or frame.empty or group_column not in frame.columns:
         return pd.DataFrame()
+    has_subject = (
+        subject_column in frame.columns
+        and frame[subject_column].map(lambda v: bool(pd.notna(v) and str(v).strip())).any()
+    )
+    resolved = paired_by
+    if paired and paired_by == "auto":
+        resolved = (
+            "subject"
+            if has_subject
+            and _count_subjects_in_both(
+                frame, subject_column, group_column, group_a, group_b
+            )
+            >= 2
+            else "row"
+        )
     rows = []
+    skipped: Dict[str, str] = {}
     labels = frame[group_column].astype("object")
     for metric in metric_columns:
         if metric not in frame.columns:
@@ -367,10 +636,28 @@ def compare_table(
         b = values[labels == group_b].dropna()
         if len(a) < 2 or len(b) < 2:
             continue
-        result = compare(a, b, paired=paired)
+        if paired and resolved == "subject":
+            result = paired_subject_compare(
+                frame, metric, group_a=group_a, group_b=group_b,
+                subject_column=subject_column, condition_column=group_column,
+            )
+            if not result.get("available"):
+                skipped[metric] = str(result.get("reason", "no paired subjects"))
+                continue
+        else:
+            if paired:
+                a_values, b_values = _row_order_pairs(a, b)
+            else:
+                a_values, b_values = a.to_numpy(dtype=float), b.to_numpy(dtype=float)
+            result = compare(a_values, b_values, paired=paired)
+            result["paired_by"] = "row" if paired else "unpaired"
+            result["n_subjects"] = None
+            result["available"] = True
         rows.append(
             {
                 "metric": metric,
+                "paired_by": result.get("paired_by"),
+                "n_subjects": result.get("n_subjects"),
                 "n_a": result["n_a"],
                 "mean_a": round(result["mean_a"], 2),
                 "n_b": result["n_b"],
@@ -378,10 +665,207 @@ def compare_table(
                 "diff": round(result["diff"], 2),
                 "pct_change": round(result["pct_change"] * 100, 1) if math.isfinite(result["pct_change"]) else None,
                 "cohens_d": round(result["cohens_d"], 2) if math.isfinite(result["cohens_d"]) else None,
+                "cohens_dz": round(result["cohens_dz"], 2) if math.isfinite(result.get("cohens_dz", float("nan"))) else None,
                 "effect": result["effect"],
-                "p_value": round(result["p_value"], 4) if math.isfinite(result["p_value"]) else None,
+                "test": result.get("test"),
+                "p_value": _p_round(result["p_value"]),
+                "permutation_p": _p_round(result.get("permutation_p", float("nan"))),
+                "sign_test_p": _p_round(result.get("sign_test_p", float("nan"))),
                 "ci_low": round(result["ci_low"], 2) if math.isfinite(result["ci_low"]) else None,
                 "ci_high": round(result["ci_high"], 2) if math.isfinite(result["ci_high"]) else None,
+            }
+        )
+    table = pd.DataFrame(rows)
+    if skipped:
+        table.attrs["skipped"] = skipped
+    if paired and not has_subject:
+        table.attrs["note"] = (
+            "no subject_id column was found; observations were paired in time order, not by subject"
+        )
+    return table
+
+
+# ------------------------------------------------- environment correlation
+
+
+def _pair_arrays(x: Iterable[float], y: Iterable[float]) -> tuple[np.ndarray, np.ndarray]:
+    xs = np.asarray(list(x), dtype=float)
+    ys = np.asarray(list(y), dtype=float)
+    if xs.size != ys.size:
+        size = min(xs.size, ys.size)
+        xs, ys = xs[:size], ys[:size]
+    valid = np.isfinite(xs) & np.isfinite(ys)
+    return xs[valid], ys[valid]
+
+
+def _r_p_value(r: float, n: int) -> float:
+    """Two-sided p-value of a correlation through the t = r√((n−2)/(1−r²)) form."""
+    if not math.isfinite(r) or n < 3 or abs(r) >= 1.0:
+        return float("nan")
+    t = r * math.sqrt((n - 2) / max(1e-15, 1.0 - r * r))
+    return float(min(max(2.0 * t_sf(abs(t), n - 2), 0.0), 1.0))
+
+
+def pearson(x: Iterable[float], y: Iterable[float]) -> Dict[str, float]:
+    """Pearson product-moment correlation with its two-sided p-value."""
+    xs, ys = _pair_arrays(x, y)
+    n = int(xs.size)
+    if n < 3 or xs.std() == 0 or ys.std() == 0:
+        return {"r": float("nan"), "p": float("nan"), "n": n}
+    r = float(np.corrcoef(xs, ys)[0, 1])
+    return {"r": r, "p": _r_p_value(r, n), "n": n}
+
+
+def spearman(x: Iterable[float], y: Iterable[float]) -> Dict[str, float]:
+    """Spearman rank correlation (average ranks for ties).
+
+    The p-value uses the same t approximation as Pearson on the ranks, which is
+    the usual large-sample approximation; with fewer than 10 pairs read it as
+    approximate and prefer the permutation p-value.
+    """
+    xs, ys = _pair_arrays(x, y)
+    n = int(xs.size)
+    if n < 3:
+        return {"rho": float("nan"), "p": float("nan"), "n": n}
+    rx = pd.Series(xs).rank(method="average").to_numpy()
+    ry = pd.Series(ys).rank(method="average").to_numpy()
+    if rx.std() == 0 or ry.std() == 0:
+        return {"rho": float("nan"), "p": float("nan"), "n": n}
+    rho = float(np.corrcoef(rx, ry)[0, 1])
+    return {"rho": rho, "p": _r_p_value(rho, n), "n": n}
+
+
+def linear_regression(
+    x: Iterable[float],
+    y: Iterable[float],
+    *,
+    alpha: float = 0.05,
+) -> Dict[str, float]:
+    """Ordinary least squares ``y = intercept + slope·x`` — the slope and its test."""
+    xs, ys = _pair_arrays(x, y)
+    n = int(xs.size)
+    nan = float("nan")
+    if n < 3:
+        return {"slope": nan, "intercept": nan, "se_slope": nan, "t": nan, "p": nan, "r2": nan, "n": n}
+    x_mean, y_mean = float(xs.mean()), float(ys.mean())
+    sxx = float(((xs - x_mean) ** 2).sum())
+    if sxx <= 0:
+        return {"slope": nan, "intercept": nan, "se_slope": nan, "t": nan, "p": nan, "r2": nan, "n": n}
+    sxy = float(((xs - x_mean) * (ys - y_mean)).sum())
+    slope = sxy / sxx
+    intercept = y_mean - slope * x_mean
+    fitted = intercept + slope * xs
+    sse = float(((ys - fitted) ** 2).sum())
+    sst = float(((ys - y_mean) ** 2).sum())
+    df = n - 2
+    if sse <= 0 or df < 1:
+        return {"slope": slope, "intercept": intercept, "se_slope": nan, "t": nan, "p": nan, "r2": nan, "n": n}
+    se_slope = math.sqrt(sse / df / sxx)
+    t = slope / se_slope if se_slope else nan
+    p = 2.0 * t_sf(abs(t), df) if math.isfinite(t) else nan
+    crit = t_ppf(1.0 - alpha / 2.0, df)
+    return {
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "se_slope": float(se_slope),
+        "slope_ci_low": float(slope - crit * se_slope),
+        "slope_ci_high": float(slope + crit * se_slope),
+        "t": float(t),
+        "p": float(min(max(p, 0.0), 1.0)) if math.isfinite(p) else nan,
+        "r2": float(1.0 - sse / sst) if sst > 0 else nan,
+        "n": n,
+    }
+
+
+#: Default environment × cardiovascular pairs (documented in provenance.py).
+DEFAULT_CORRELATION_PAIRS: tuple[tuple[str, str], ...] = (
+    ("pm25", "sbp"),
+    ("pm25", "dbp"),
+    ("pm25", "map"),
+    ("pm25", "rmssd"),
+    ("pm25", "sdnn"),
+    ("green_index", "sbp"),
+    ("green_index", "rmssd"),
+    ("temp_c", "hr"),
+    ("temp_c", "sbp"),
+    ("humidity_pct", "hr"),
+    ("env_load", "sbp"),
+    ("env_load", "rmssd"),
+)
+
+
+def correlation_profile(
+    frame: pd.DataFrame,
+    x_key: str,
+    y_key: str,
+    *,
+    min_n: int = 4,
+) -> Dict[str, Any]:
+    """Pearson r, Spearman ρ and the OLS slope for one pair of columns."""
+    if frame is None or frame.empty or x_key not in frame.columns or y_key not in frame.columns:
+        return {"x": x_key, "y": y_key, "available": False, "reason": "column not present"}
+    x = pd.to_numeric(frame[x_key], errors="coerce")
+    y = pd.to_numeric(frame[y_key], errors="coerce")
+    keep = x.notna() & y.notna()
+    xs, ys = x[keep], y[keep]
+    if int(keep.sum()) < min_n:
+        return {
+            "x": x_key,
+            "y": y_key,
+            "available": False,
+            "n": int(keep.sum()),
+            "reason": f"needs at least {min_n} paired observations",
+        }
+    p = pearson(xs, ys)
+    s = spearman(xs, ys)
+    regression = linear_regression(xs, ys)
+    return {
+        "x": x_key,
+        "y": y_key,
+        "available": True,
+        "n": int(p["n"]),
+        "pearson_r": p["r"],
+        "pearson_p": p["p"],
+        "spearman_rho": s["rho"],
+        "spearman_p": s["p"],
+        "slope": regression["slope"],
+        "intercept": regression["intercept"],
+        "slope_ci_low": regression.get("slope_ci_low", float("nan")),
+        "slope_ci_high": regression.get("slope_ci_high", float("nan")),
+        "slope_p": regression["p"],
+        "r_squared": regression["r2"],
+        "warning": "correlation is not causation; a single subject's series cannot separate exposure from season, activity or mood",
+    }
+
+
+def correlation_table(
+    frame: pd.DataFrame,
+    pairs: Sequence[tuple[str, str]] | None = None,
+    *,
+    min_n: int = 4,
+) -> pd.DataFrame:
+    """Environment × cardiovascular correlation table (r, ρ, slope, p, n)."""
+    pairs = tuple(pairs or DEFAULT_CORRELATION_PAIRS)
+    rows = []
+    for x_key, y_key in pairs:
+        profile = correlation_profile(frame, x_key, y_key, min_n=min_n)
+        if not profile.get("available"):
+            continue
+        rows.append(
+            {
+                "x": x_key,
+                "y": y_key,
+                "n": profile["n"],
+                "pearson_r": round(profile["pearson_r"], 3),
+                "pearson_p": _p_round(profile["pearson_p"]),
+                "spearman_rho": round(profile["spearman_rho"], 3),
+                "spearman_p": _p_round(profile["spearman_p"]),
+                "slope": round(profile["slope"], 4) if math.isfinite(profile["slope"]) else None,
+                "intercept": round(profile["intercept"], 3) if math.isfinite(profile["intercept"]) else None,
+                "slope_ci_low": round(profile["slope_ci_low"], 4) if math.isfinite(profile["slope_ci_low"]) else None,
+                "slope_ci_high": round(profile["slope_ci_high"], 4) if math.isfinite(profile["slope_ci_high"]) else None,
+                "slope_p": _p_round(profile["slope_p"]),
+                "r_squared": round(profile["r_squared"], 3) if math.isfinite(profile["r_squared"]) else None,
             }
         )
     return pd.DataFrame(rows)

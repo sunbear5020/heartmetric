@@ -19,7 +19,7 @@ from xml.etree import ElementTree as ET
 import pandas as pd
 
 from . import schema
-from .schema import CONDITION, FLAGS, METRIC_COLUMNS, NOTES, SOURCE, STANDARD_COLUMNS, TIMESTAMP
+from .schema import CONDITION, FLAGS, METRIC_COLUMNS, NOTES, SOURCE, STANDARD_COLUMNS, SUBJECT, TIMESTAMP
 
 DEFAULT_TIMEZONE = "Asia/Seoul"
 
@@ -35,6 +35,7 @@ class LoadResult:
     warnings: List[str] = field(default_factory=list)
     rows_read: int = 0
     format: str = ""
+    has_condition: bool = False
 
     def summary(self) -> Dict[str, Any]:
         return {
@@ -45,6 +46,7 @@ class LoadResult:
             "columns": {k: v for k, v in self.mapping.items()},
             "unmapped": list(self.unmapped),
             "warnings": list(self.warnings),
+            "has_condition": self.has_condition,
         }
 
 
@@ -243,6 +245,11 @@ def _finalize(
     if CONDITION in working.columns:
         working[CONDITION] = working[CONDITION].map(schema.normalize_condition)
 
+    if SUBJECT in working.columns:
+        working[SUBJECT] = working[SUBJECT].map(schema.normalize_subject)
+    else:
+        working[SUBJECT] = pd.NA
+
     if SOURCE in working.columns:
         filled = working[SOURCE].astype("string").str.strip()
         working[SOURCE] = filled.where(filled.notna() & (filled != ""), source)
@@ -262,6 +269,7 @@ def _finalize(
     if not metric_present:
         warnings.append("no known metric column (BP, HR, HRV, environment) was found")
 
+    condition_present = bool(working[CONDITION].notna().any()) if CONDITION in working.columns else False
     return LoadResult(
         frame=working,
         source=source,
@@ -270,6 +278,7 @@ def _finalize(
         warnings=warnings,
         rows_read=rows_read,
         format=format_name,
+        has_condition=condition_present,
     )
 
 
@@ -574,6 +583,7 @@ def load_file(
     if condition:
         result.frame[CONDITION] = schema.normalize_condition(condition)
         result.mapping[CONDITION] = "argument"
+        result.has_condition = True
     return result
 
 

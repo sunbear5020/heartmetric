@@ -1,7 +1,11 @@
-"""Export a HEARTMETRIC analysis to Excel, CSV or JSON.
+"""Export a HEARTMETRIC analysis to Excel, CSV, JSON or a Markdown report.
 
 The Excel workbook is meant to be handed to a co-author: it opens on a README
-sheet that states the license, the data source and what each sheet holds.
+sheet that states the license, the data source, the method and what each sheet
+holds. The Markdown report is the same result in a form that survives a chat
+message, a pull request or a preprint appendix.
+
+License: MIT · Copyright (c) 2026 FEI · HEL Lab, Gyeongsang National University
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import pandas as pd
 from .schema import STANDARD_COLUMNS
 
 LICENSE_LINE = "MIT License · Copyright (c) 2026 FEI · HEL Lab, Gyeongsang National University"
+SCHEMA_VERSION_FALLBACK = "0.2.0"
 
 
 def _frame_from_records(records: Any, columns: list[str] | None = None) -> pd.DataFrame:
@@ -32,6 +37,51 @@ def _frame_from_records(records: Any, columns: list[str] | None = None) -> pd.Da
             frame = frame[[c for c in columns if c in frame.columns]]
         return frame
     return pd.DataFrame()
+
+
+def methodology_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
+    """The provenance block as a flat sheet (one indicator per row)."""
+    block = bundle.get("methodology") or {}
+    indicators = block.get("indicators") if isinstance(block, dict) else None
+    if not indicators and isinstance(block, dict):
+        indicators = {k: v for k, v in block.items() if isinstance(v, dict)}
+    rows = []
+    for key, record in (indicators or {}).items():
+        rows.append(
+            {
+                "indicator": key,
+                "label": record.get("label"),
+                "unit": record.get("unit"),
+                "kind": record.get("kind"),
+                "device": record.get("device"),
+                "formula": record.get("formula"),
+                "reference": record.get("reference"),
+                "boundary": record.get("boundary"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def alignment_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
+    """Per-stream alignment counts, one row per input stream."""
+    block = bundle.get("alignment") or (bundle.get("meta") or {}).get("alignment")
+    if not block:
+        return pd.DataFrame()
+    rows = []
+    for stream in block.get("streams", []):
+        rows.append(
+            {
+                "stream": stream.get("name"),
+                "role": stream.get("role"),
+                "rows": stream.get("rows"),
+                "matched_rows": stream.get("matched_rows"),
+                "unmatched_rows": stream.get("unmatched_rows"),
+                "match_rate_pct": stream.get("match_rate_pct"),
+                "mode": block.get("mode"),
+                "tolerance_minutes": block.get("tolerance_minutes"),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def bundle_frames(bundle: Mapping[str, Any]) -> Dict[str, pd.DataFrame]:
@@ -51,11 +101,13 @@ def bundle_frames(bundle: Mapping[str, Any]) -> Dict[str, pd.DataFrame]:
     frames = {
         "Summary": pd.DataFrame(summary_rows),
         "Quality": pd.DataFrame(quality_rows),
+        "Alignment": alignment_frame(bundle),
         "Conditions": _frame_from_records(bundle.get("conditions")),
         "Exposure": _frame_from_records(bundle.get("exposure")),
         "Comparison": _frame_from_records(bundle.get("comparison")),
         "Daily": _frame_from_records(bundle.get("daily")),
         "Correlations": _frame_from_records(bundle.get("correlations")),
+        "Methodology": methodology_frame(bundle),
         "Readings": _frame_from_records(bundle.get("series")),
     }
     return {name: frame for name, frame in frames.items() if not frame.empty}
@@ -63,20 +115,47 @@ def bundle_frames(bundle: Mapping[str, Any]) -> Dict[str, pd.DataFrame]:
 
 def _readme_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
     meta = bundle.get("meta") or {}
+    comparison = meta.get("comparison") or {}
+    alignment = bundle.get("alignment") or meta.get("alignment") or {}
+    paired_by = comparison.get("paired_by") or "unpaired"
     rows = [
         ("Project", "HEARTMETRIC — Environmental Cardiovascular Response Platform"),
         ("Lab", "FEI · HEL Lab, Gyeongsang National University"),
         ("License", LICENSE_LINE),
         ("Generated", meta.get("generated_at", "")),
         ("Version", meta.get("heartmetric_version", "")),
-        ("Comparison", f"{meta.get('comparison', {}).get('b', '')} → {meta.get('comparison', {}).get('a', '')}"),
+        ("Bundle schema", meta.get("schema_version", SCHEMA_VERSION_FALLBACK)),
+        ("Comparison", f"{comparison.get('b', '')} → {comparison.get('a', '')} ({paired_by})"),
+        ("Subjects", comparison.get("n_subjects", "—")),
         ("Night window", meta.get("night_window", "")),
         ("Data", meta.get("input", {}).get("data", "user-supplied") if isinstance(meta.get("input"), dict) else "user-supplied"),
         ("", ""),
-        ("Sheets", "Summary · Quality · Conditions · Exposure · Comparison · Daily · Correlations · Readings"),
+        (
+            "Sheets",
+            "Summary · Quality · Alignment · Conditions · Exposure · Comparison · Daily · "
+            "Correlations · Methodology · Readings",
+        ),
         ("Indices", "MAP = DBP + (SBP−DBP)/3 · PP = SBP−DBP · Dipping = (day−night)/day × 100"),
-        ("", "HRV recovery = night RMSSD / day RMSSD × 100 (name of the baseline in the Summary sheet)"),
+        ("", "HRV recovery = night RMSSD / day RMSSD × 100 (baseline named in the Summary sheet)"),
         ("", "Stress index: 0.30 BP load + 0.25 HRV suppression + 0.20 PM2.5 + 0.15 thermal + 0.10 HR load"),
+        ("", "Environmental load (row): mean of PM2.5/35 · |temp−22|/15 · (1−green), each clamped to 0–1"),
+        (
+            "Statistics",
+            "Welch t (independent) · paired t with d_z, sign-flip permutation and exact sign test "
+            "(subject-level when subject_id exists) · Pearson r + Spearman ρ + OLS slope",
+        ),
+        ("Correlation caveat", "Correlation is not causation; autocorrelated series shrink the effective sample size."),
+    ]
+    if alignment:
+        rows.append(
+            (
+                "Alignment",
+                f"{alignment.get('mode')} · tolerance {alignment.get('tolerance_minutes')} min · "
+                f"matched {alignment.get('anchors_matched')}/{alignment.get('anchors')} "
+                f"({alignment.get('match_rate_pct')}%)",
+            )
+        )
+    rows += [
         ("", ""),
         (
             "Disclaimer",
@@ -99,7 +178,10 @@ def to_excel(
     if isinstance(bundle, pd.DataFrame):
         bundle = {"series": bundle.to_dict(orient="records"), "meta": {}}
     frames = bundle_frames(bundle)
-    order = sheet_order or ["Summary", "Quality", "Conditions", "Exposure", "Comparison", "Daily", "Correlations", "Readings"]
+    order = sheet_order or [
+        "Summary", "Quality", "Alignment", "Conditions", "Exposure", "Comparison",
+        "Daily", "Correlations", "Methodology", "Readings",
+    ]
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         _readme_frame(bundle).to_excel(writer, sheet_name="README", index=False)
@@ -156,13 +238,189 @@ def to_json(bundle: Mapping[str, Any], path: str | Path | None = None, *, indent
     return str(path)
 
 
+# --------------------------------------------------------------- markdown
+
+
+def _fmt(value: Any, digits: int = 1) -> str:
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, float):
+        if value != value:  # NaN
+            return "—"
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
+def _markdown_table(frame: pd.DataFrame, columns: list[str] | None = None, digits: int = 2) -> str:
+    if frame is None or frame.empty:
+        return "_no rows_"
+    columns = [c for c in (columns or list(frame.columns)) if c in frame.columns]
+    if not columns:
+        return "_no rows_"
+    header = "| " + " | ".join(columns) + " |"
+    rule = "| " + " | ".join("---" for _ in columns) + " |"
+    lines = [header, rule]
+    for _, row in frame.iterrows():
+        cells = []
+        for column in columns:
+            value = row[column]
+            cells.append(_fmt(value, digits) if isinstance(value, float) else ("—" if value is None or value == "" else str(value)))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def to_markdown(bundle: Mapping[str, Any], path: str | Path | None = None) -> str:
+    """Render the bundle as a Markdown report (Korean headings, same numbers)."""
+    meta = bundle.get("meta") or {}
+    summary = bundle.get("summary") or {}
+    quality = bundle.get("quality") or {}
+    comparison = _frame_from_records(bundle.get("comparison"))
+    correlations = _frame_from_records(bundle.get("correlations"))
+    conditions = _frame_from_records(bundle.get("conditions"))
+    alignment = bundle.get("alignment") or meta.get("alignment") or {}
+    methodology = methodology_frame(bundle)
+    comparison_meta = meta.get("comparison") or {}
+
+    lines: list[str] = []
+    lines.append("# HEARTMETRIC 분석 리포트")
+    lines.append("")
+    lines.append(
+        f"**FEI · HEL Lab, 경상국립대학교** · v{meta.get('heartmetric_version', '0.2.0')} "
+        f"(bundle schema {meta.get('schema_version', SCHEMA_VERSION_FALLBACK)})  "
+    )
+    lines.append(f"생성: {meta.get('generated_at', '—')} · 100% 로컬 실행 · MIT License")
+    lines.append("")
+    lines.append(
+        "> 연구 요약입니다. 진단이 아니며, 커프 혈압 측정과 의료진의 판단이 언제나 기준입니다. "
+        "Oura Health Oy · Apple Inc.와 제휴하지 않은 독립 프로젝트입니다."
+    )
+    lines.append("")
+
+    rows_out = quality.get("rows_out", summary.get("rows"))
+    lines.append("## 1. 데이터와 품질")
+    lines.append("")
+    lines.append(f"- 유효 행: **{rows_out}** / 입력 {quality.get('rows_in', '—')}")
+    if quality.get("span"):
+        span = quality["span"]
+        lines.append(f"- 관측 기간: {span.get('start', '—')} → {span.get('end', '—')} ({span.get('days', '—')}일)")
+    conditions_text = ", ".join(f"{k} {v}" for k, v in (quality.get("conditions") or {}).items())
+    if conditions_text:
+        lines.append(f"- 조건: {conditions_text}")
+    lines.append(
+        f"- 제거: 범위 밖 {sum((quality.get('removed_out_of_range') or {}).values())}건 · "
+        f"모순 쌍 {quality.get('removed_inconsistent', 0)}건 · 중복 {quality.get('duplicates_removed', 0)}건"
+    )
+    lines.append(f"- 최대 공백: {quality.get('max_gap_hours', '—')}시간 (보정하지 않음)")
+    if alignment:
+        lines.append(
+            f"- 스트림 결합: {alignment.get('mode')} · 허용 오차 {alignment.get('tolerance_minutes')}분 · "
+            f"앵커 매칭 {alignment.get('anchors_matched')}/{alignment.get('anchors')}"
+            f"({alignment.get('match_rate_pct')}%)"
+        )
+        for stream in alignment.get("streams", []):
+            lines.append(
+                f"  - {stream.get('name')} ({stream.get('role')}): {stream.get('matched_rows')}/{stream.get('rows')}행 결합"
+            )
+    lines.append("")
+
+    lines.append("## 2. 요약 지표")
+    lines.append("")
+    lines.append("| 지표 | 값 | 단위 | 근거 구분 |")
+    lines.append("| --- | --- | --- | --- |")
+    lines.append(f"| 평균 혈압 (SBP/DBP) | {_fmt(summary.get('sbp'), 1)} / {_fmt(summary.get('dbp'), 1)} | mmHg | measured |")
+    lines.append(f"| MAP · 맥압 | {_fmt(summary.get('map'), 1)} / {_fmt(summary.get('pp'), 1)} | mmHg | derived |")
+    dipping = summary.get("dipping") or {}
+    if dipping.get("available"):
+        lines.append(
+            f"| 야간 하강률 | {_fmt(dipping.get('dipping_pct'), 1)}% ({dipping.get('category')}) | % | derived |"
+        )
+    recovery = summary.get("hrv_recovery") or {}
+    if recovery.get("available"):
+        lines.append(
+            f"| HRV 회복 지수 | {_fmt(recovery.get('index'), 1)} ({recovery.get('band')}, baseline {recovery.get('baseline')}) | index | derived |"
+        )
+    stress = summary.get("stress_index") or {}
+    if stress.get("available"):
+        lines.append(f"| 환경 스트레스 지수 | {_fmt(stress.get('index'), 1)} ({stress.get('band')}) | 0–100 | exploratory |")
+    lines.append(f"| 평균 PM2.5 | {_fmt(summary.get('pm25'), 1)} | µg/m³ | measured |")
+    lines.append(f"| 평균 기온 | {_fmt(summary.get('temp_c'), 1)} | °C | measured |")
+    lines.append("")
+
+    lines.append("## 3. 조건별 비교")
+    lines.append("")
+    a = comparison_meta.get("a", "A")
+    b = comparison_meta.get("b", "B")
+    paired_by = comparison_meta.get("paired_by", "unpaired")
+    lines.append(f"A = **{a}**, B = **{b}** · 방식: `{paired_by}` · Δ는 A − B")
+    lines.append("")
+    if not comparison.empty:
+        lines.append(
+            _markdown_table(
+                comparison,
+                ["metric", "n_a", "mean_a", "n_b", "mean_b", "diff", "cohens_d", "cohens_dz",
+                 "effect", "p_value", "permutation_p", "ci_low", "ci_high"],
+            )
+        )
+        lines.append("")
+        lines.append(
+            "효과크기: |d| < 0.2 무시 · 0.2–0.5 작음 · 0.5–0.8 중간 · ≥ 0.8 큼. "
+            "p는 다중비교 보정 전 값입니다. 대응표본에서는 `cohens_dz`를 읽으세요."
+        )
+    else:
+        lines.append("_조건 두 개 이상의 데이터가 있어야 비교표가 만들어집니다._")
+    lines.append("")
+
+    lines.append("## 4. 환경 노출 × 심혈관 상관")
+    lines.append("")
+    if not correlations.empty:
+        lines.append(
+            _markdown_table(
+                correlations,
+                ["x", "y", "n", "pearson_r", "pearson_p", "spearman_rho", "spearman_p",
+                 "slope", "slope_p", "r_squared"],
+            )
+        )
+        lines.append("")
+        lines.append(
+            "r은 선형, ρ는 단조 관계입니다. 기울기는 y = 절편 + 기울기·x 의 OLS 추정치이며 "
+            "관측 범위 밖으로 외삽하지 않습니다. 상관은 인과가 아닙니다."
+        )
+    else:
+        lines.append("_환경 지표와 심혈관 지표가 함께 있는 행이 부족합니다._")
+    lines.append("")
+
+    lines.append("## 5. 조건별 평균")
+    lines.append("")
+    lines.append(_markdown_table(conditions))
+    lines.append("")
+
+    lines.append("## 6. 지표 정의와 경계")
+    lines.append("")
+    lines.append("| 지표 | 구분 | 수식 | 경계 |")
+    lines.append("| --- | --- | --- | --- |")
+    for _, row in methodology.iterrows():
+        lines.append(
+            f"| {row.get('label')} | {row.get('kind')} | {row.get('formula') or '—'} | {row.get('boundary') or '—'} |"
+        )
+    lines.append("")
+    lines.append(f"인용: FEI · HEL Lab, Gyeongsang National University. (2026). HEARTMETRIC (v{meta.get('heartmetric_version', '0.2.0')}). MIT License.")
+    lines.append("")
+
+    text = "\n".join(lines)
+    if path is None:
+        return text
+    Path(str(path)).parent.mkdir(parents=True, exist_ok=True)
+    Path(str(path)).write_text(text, encoding="utf-8")
+    return str(path)
+
+
 def save(
     bundle: Mapping[str, Any],
     path: str | Path,
     *,
     fmt: str | None = None,
 ) -> str:
-    """Save by extension (``.xlsx`` / ``.csv`` / ``.json``)."""
+    """Save by extension (``.xlsx`` / ``.csv`` / ``.json`` / ``.md``)."""
     suffix = (fmt or Path(str(path)).suffix.lstrip(".")).lower()
     if suffix in ("xlsx", "xls", "excel"):
         return str(to_excel(bundle, path))
@@ -170,4 +428,6 @@ def save(
         return str(to_csv(bundle_frames(bundle).get("Readings", pd.DataFrame()), path))
     if suffix == "json":
         return str(to_json(bundle, path))
+    if suffix in ("md", "markdown"):
+        return str(to_markdown(bundle, path))
     raise ValueError(f"unsupported export format: {suffix}")

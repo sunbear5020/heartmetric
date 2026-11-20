@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
-from .schema import CONDITION, FLAGS, METRIC_COLUMNS, SOURCE, STANDARD_COLUMNS, TIMESTAMP
+from .schema import CONDITION, FLAGS, METRIC_COLUMNS, SOURCE, STANDARD_COLUMNS, SUBJECT, TIMESTAMP
 
 #: Hard physiological plausibility windows. Outside these a reading is treated
 #: as an entry/device error and removed (never silently — every removal is
@@ -164,7 +164,7 @@ def clean(
     working = working.sort_values(TIMESTAMP, kind="mergesort").reset_index(drop=True)
 
     # ---- exact duplicates -------------------------------------------------
-    value_columns = [TIMESTAMP, CONDITION, *METRIC_COLUMNS]
+    value_columns = [TIMESTAMP, SUBJECT, CONDITION, *METRIC_COLUMNS]
     before = len(working)
     working = working.drop_duplicates(subset=value_columns, keep="first").reset_index(drop=True)
     duplicates_removed = before - len(working)
@@ -179,7 +179,8 @@ def clean(
         within_window = (working[TIMESTAMP] - previous_time).dt.total_seconds().abs() <= dedupe_seconds
         same_signature = signature == signature.shift(1)
         same_condition = working[CONDITION].fillna("~") == working[CONDITION].fillna("~").shift(1)
-        duplicate_mask = within_window & same_signature & same_condition
+        same_subject = working[SUBJECT].fillna("~") == working[SUBJECT].fillna("~").shift(1)
+        duplicate_mask = within_window & same_signature & same_condition & same_subject
         duplicate_mask.fillna(False, inplace=True)
         if duplicate_mask.any():
             duplicates_removed += int(duplicate_mask.sum())

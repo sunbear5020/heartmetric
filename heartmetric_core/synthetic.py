@@ -18,11 +18,12 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
-from .schema import CONDITION, FLAGS, NOTES, SOURCE, STANDARD_COLUMNS, TIMESTAMP
+from .schema import CONDITION, FLAGS, NOTES, SOURCE, STANDARD_COLUMNS, SUBJECT, TIMESTAMP
 
 DEFAULT_START = "2026-05-06"
 DEFAULT_DAYS = 14
 DEFAULT_SEED = 5020
+DEFAULT_SUBJECT = "S-01"
 
 #: Effect model (mmHg / bpm / ms) used by :func:`generate`.
 EFFECTS: Dict[str, Dict[str, float]] = {
@@ -54,6 +55,7 @@ def generate(
     start: str = DEFAULT_START,
     *,
     include_anomalies: bool = True,
+    subject: str = DEFAULT_SUBJECT,
 ) -> pd.DataFrame:
     """Build the standard-schema demo table.
 
@@ -143,6 +145,7 @@ def generate(
             rows.append(
                 {
                     TIMESTAMP: timestamp,
+                    SUBJECT: subject,
                     SOURCE: "synthetic",
                     CONDITION: condition,
                     "sbp": round(float(sbp), 1),
@@ -186,6 +189,53 @@ def generate(
 
     frame = frame.sort_values(TIMESTAMP, kind="mergesort").reset_index(drop=True)
     return frame
+
+
+def generate_cohort(
+    subjects: int = 6,
+    days: int = 8,
+    seed: int = 5020,
+    start: str = DEFAULT_START,
+    *,
+    include_anomalies: bool = False,
+) -> pd.DataFrame:
+    """Synthetic cohort: each participant walks both an urban and a forest day.
+
+    Each subject is generated with its own seed (so its baseline pressure, HRV
+    and drift differ), then labelled ``S-01`` … ``S-nn``. Because every subject
+    appears under both conditions, the result supports a subject-level paired
+    comparison — the demonstration for ``paired_subject_compare``.
+
+    The data remain 100 % generated: no participant, vendor file or scraped
+    value is used. Effect sizes are the same plausible values as :func:`generate`.
+    """
+    if days < 2:
+        raise ValueError("a cohort needs at least two days so both conditions exist")
+    frames = []
+    for index in range(max(1, int(subjects))):
+        frames.append(
+            generate(
+                days=days,
+                seed=seed + 101 * index,
+                start=start,
+                include_anomalies=include_anomalies,
+                subject=f"S-{index + 1:02d}",
+            )
+        )
+    frame = pd.concat(frames, ignore_index=True)
+    return frame.sort_values([SUBJECT, TIMESTAMP], kind="mergesort").reset_index(drop=True)
+
+
+def cohort_metadata(subjects: int = 6, days: int = 8, seed: int = 5020) -> Dict[str, Any]:
+    """Provenance for :func:`generate_cohort`."""
+    return {
+        "data": "synthetic_cohort",
+        "generator": "heartmetric_core.synthetic.generate_cohort",
+        "seed": seed,
+        "subjects": int(subjects),
+        "days": int(days),
+        "note": "100% generated; every subject appears under both urban and forest conditions",
+    }
 
 
 def write_demo_csv(path: str = "heartmetric_demo.csv", **kwargs: Any) -> str:

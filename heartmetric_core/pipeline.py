@@ -9,8 +9,12 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
-from . import __version__, cleaner, loader, metrics, stats
-from .schema import CONDITION, TIMESTAMP
+from . import __version__, cleaner, loader, metrics, provenance, stats
+from .schema import CONDITION, SUBJECT, TIMESTAMP
+
+#: Version of the exported bundle format (independent of the package version so a
+#: reader can tell a schema change from a feature addition).
+SCHEMA_VERSION = "0.2.0"
 
 DEFAULT_METRICS = ["sbp", "dbp", "map", "pp", "hr", "rmssd", "sdnn"]
 
@@ -22,6 +26,8 @@ def _json_safe(value: Any) -> Any:
         return [_json_safe(v) for v in value]
     if isinstance(value, (np.integer,)):
         return int(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
     if isinstance(value, (np.floating, float)):
         number = float(value)
         return number if math.isfinite(number) else None
@@ -38,11 +44,19 @@ def analyze(
     group_a: str = "forest",
     group_b: str = "urban",
     paired: bool = False,
+    paired_by: str = "auto",
+    subject_column: str = SUBJECT,
     night: tuple[int, int] = metrics.DEFAULT_NIGHT,
     gap_hours: float = cleaner.DEFAULT_GAP_HOURS,
     metadata: Optional[Dict[str, Any]] = None,
+    alignment: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Clean a standard table and compute every metric HEARTMETRIC reports."""
+    """Clean a standard table and compute every metric HEARTMETRIC reports.
+
+    ``paired_by`` is passed to :func:`heartmetric_core.stats.compare_table`:
+    ``"auto"`` pairs by subject when a usable ``subject_id`` exists, otherwise
+    pairs observations in time order and records that choice in the output.
+    """
     report = cleaner.clean(frame, gap_hours=gap_hours)
     cleaned = metrics.add_derived(report.frame)
 
@@ -59,18 +73,37 @@ def analyze(
         group_a=group_a,
         group_b=group_b,
         paired=paired,
+        paired_by=paired_by,
+        subject_column=subject_column,
     )
     daily = metrics.daily_table(cleaned)
-    correlations = metrics.correlation_table(cleaned)
+    correlations = stats.correlation_table(cleaned)
     series = metrics.time_series(cleaned)
 
+    subject_count = (
+        int(cleaned[SUBJECT].dropna().nunique()) if SUBJECT in cleaned.columns else 0
+    )
+    comparison_payload = comparison.to_dict(orient="records")
     bundle: Dict[str, Any] = {
         "meta": {
+            "schema_version": SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
             "heartmetric_version": __version__,
             "license": "MIT · Copyright (c) 2026 FEI · HEL Lab, Gyeongsang National University",
-            "comparison": {"a": group_a, "b": group_b, "paired": paired},
+            "comparison": {
+                "a": group_a,
+                "b": group_b,
+                "paired": paired,
+                "paired_by": (
+                    comparison.attrs.get("paired_by")
+                    or (comparison_payload[0].get("paired_by") if comparison_payload else None)
+                    or ("row" if paired else "unpaired")
+                ),
+                "subject_column": subject_column if subject_count else None,
+                "n_subjects": subject_count,
+            },
             "night_window": f"{night[0]:02d}:00–{night[1]:02d}:00",
+            "alignment": alignment,
             "disclaimer": "Research summary of the submitted series. Not a medical diagnosis; "
             "a cuff measurement and a clinician remain the reference.",
         },
@@ -78,11 +111,16 @@ def analyze(
         "summary": summary,
         "conditions": conditions.to_dict(orient="records"),
         "exposure": exposure.to_dict(orient="records"),
-        "comparison": comparison.to_dict(orient="records"),
+        "comparison": comparison_payload,
         "daily": daily.to_dict(orient="records"),
         "correlations": correlations.to_dict(orient="records"),
         "series": series,
+        "methodology": provenance.methodology(),
     }
+    if comparison.attrs.get("skipped"):
+        bundle["comparison_skipped"] = comparison.attrs["skipped"]
+    if comparison.attrs.get("note"):
+        bundle["meta"]["comparison"]["note"] = comparison.attrs["note"]
     if metadata:
         bundle["meta"]["input"] = metadata
     return _json_safe(bundle)
@@ -107,6 +145,39 @@ def analyze_file(path: str, **kwargs: Any) -> Dict[str, Any]:
     return analyze_loaded(loader.load_file(path), **kwargs)
 
 
+def analyze_streams(
+    streams: Any,
+    *,
+    tolerance_minutes: float = 30.0,
+    mode: str = "tolerance",
+    anchor: str | None = None,
+    conditions: Any = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Align several streams/files and analyse the joined table in one call.
+
+    ``streams`` may be paths, raw CSV/JSON text, load results or tables; when
+    they are paths, ``conditions`` can label each file (``["forest", None]``).
+    """
+    from . import align
+
+    if conditions is not None:
+        results = []
+        for index, item in enumerate(streams):
+            condition = conditions[index] if index < len(conditions) else None
+            results.append(loader.load_file(item, condition=condition) if isinstance(item, (str, bytes)) else item)
+        aligned = align.align_streams(results, tolerance_minutes=tolerance_minutes, mode=mode, anchor=anchor)
+    else:
+        aligned = align.align_streams(streams, tolerance_minutes=tolerance_minutes, mode=mode, anchor=anchor)
+
+    bundle = analyze(aligned.frame, alignment=aligned.report.to_dict(), **kwargs)
+    bundle["alignment"] = aligned.report.to_dict()
+    warnings = list(aligned.report.warnings)
+    if warnings:
+        bundle["warnings"] = list(dict.fromkeys(bundle.get("warnings", []) + warnings))
+    return bundle
+
+
 def demo_bundle(**kwargs: Any) -> Dict[str, Any]:
     """The bundled 14-day urban vs forest demonstration analysis."""
     from . import synthetic
@@ -114,4 +185,31 @@ def demo_bundle(**kwargs: Any) -> Dict[str, Any]:
     frame = synthetic.generate()
     bundle = analyze(frame, metadata={"data": "synthetic", **synthetic.metadata()}, **kwargs)
     bundle["meta"]["demo"] = True
+    return bundle
+
+
+def demo_streams(**kwargs: Any) -> Dict[str, Any]:
+    """The demo split into three files (BP / wearable / environment) and re-joined.
+
+    This exercises the v0.2 alignment path end to end: the same synthetic study
+    is written as three separate streams with their own clocks and then aligned.
+    """
+    from . import align, synthetic
+
+    frame = synthetic.generate()
+    bp = frame[[TIMESTAMP, "sbp", "dbp", "condition"]].dropna(subset=["sbp"]).copy()
+    wearable = frame[[TIMESTAMP, "hr", "rmssd", "sdnn", "condition"]].dropna(subset=["rmssd"]).copy()
+    # the environmental logger writes on its own schedule: 5 minutes later
+    environment = frame[[TIMESTAMP, "temp_c", "humidity_pct", "pm25", "pm10", "green_index", "forest", "condition"]].copy()
+    environment[TIMESTAMP] = pd.to_datetime(environment[TIMESTAMP]) + pd.Timedelta(minutes=5)
+
+    tolerance = kwargs.pop("tolerance_minutes", 30.0)
+    aligned = align.align_streams(
+        [("cuff_bp.csv", bp), ("wearable.json", wearable), ("environment.csv", environment)],
+        tolerance_minutes=tolerance,
+    )
+    bundle = analyze(aligned.frame, alignment=aligned.report.to_dict(), **kwargs)
+    bundle["meta"]["demo"] = True
+    bundle["meta"]["input"] = {"data": "synthetic", "streams": 3, **synthetic.metadata()}
+    bundle["alignment"] = aligned.report.to_dict()
     return bundle

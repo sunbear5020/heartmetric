@@ -26,6 +26,7 @@ from typing import Dict, List
 # --------------------------------------------------------------------- columns
 
 TIMESTAMP = "timestamp"
+SUBJECT = "subject_id"
 SOURCE = "source"
 CONDITION = "condition"
 FLAGS = "flags"
@@ -51,7 +52,16 @@ METRIC_COLUMNS: List[str] = [
 
 ACTIVITY = "activity"
 
-STANDARD_COLUMNS: List[str] = [TIMESTAMP, SOURCE, CONDITION, *METRIC_COLUMNS, ACTIVITY, FLAGS, NOTES]
+STANDARD_COLUMNS: List[str] = [
+    TIMESTAMP,
+    SUBJECT,
+    SOURCE,
+    CONDITION,
+    *METRIC_COLUMNS,
+    ACTIVITY,
+    FLAGS,
+    NOTES,
+]
 
 #: Columns that must be numeric after loading.
 NUMERIC_COLUMNS: List[str] = [*METRIC_COLUMNS]
@@ -67,6 +77,11 @@ ALIASES: Dict[str, List[str]] = {
         "start date", "starttime", "enddate", "recordedat", "recorded at", "measuredat",
         "measurement time", "day", "summarydate", "bedtime start", "bedtime_start",
         "측정일", "측정시각", "일시", "날짜", "시간", "측정일시",
+    ],
+    SUBJECT: [
+        "subject id", "subject", "subjectid", "participant", "participant id", "participantid",
+        "participant code", "person id", "person", "record id", "user id", "userid",
+        "피험자", "피험자id", "피험자번호", "대상자", "대상자id", "참가자", "참가자id", "연구대상",
     ],
     SOURCE: ["source", "device", "app", "vendor", "출처", "기기"],
     CONDITION: [
@@ -211,6 +226,18 @@ def canonical_column(name: object) -> str | None:
 def canonical_metric_name(value: object) -> str | None:
     key = normalize_key(value)
     return METRIC_NAME_MAP.get(key) if key else None
+
+
+def normalize_subject(value: object) -> str | None:
+    """Keep a subject identifier as a trimmed string (never a number)."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null", "-", "<na>"}:
+        return None
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    return text
 
 
 def normalize_condition(value: object) -> str | None:

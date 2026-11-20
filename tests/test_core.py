@@ -127,6 +127,16 @@ def test_cleaner_counts_duplicates():
     assert report.duplicates_removed == 1
 
 
+def test_cleaner_keeps_two_subjects_with_identical_readings():
+    base = synthetic.generate(days=2, include_anomalies=False)
+    base = base.drop(columns=["subject_id"])
+    first = base.assign(subject_id="S-01")
+    second = base.assign(subject_id="S-02")
+    report = cleaner.clean(pd.concat([first, second], ignore_index=True))
+    assert report.duplicates_removed == 0
+    assert report.rows_out == len(first) + len(second)
+
+
 def test_cleaner_reports_gaps():
     frame = pd.DataFrame(
         {

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "heartmetric"
-version = "0.1.0"
-description = "HEARTMETRIC — Environmental Cardiovascular Response Platform: clean-room analysis of cuff blood pressure, wearable HR/HRV and environmental exposure."
+version = "0.2.0"
+description = "HEARTMETRIC — Environmental Cardiovascular Response Platform: clean-room alignment and analysis of cuff blood pressure, wearable HR/HRV and environmental exposure."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -19,6 +19,8 @@ keywords = [
   "environmental exposure",
   "digital health",
   "open source",
+  "reproducible research",
+  "time-series alignment",
 ]
 classifiers = [
   "License :: OSI Approved :: MIT License",

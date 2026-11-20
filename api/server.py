@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # after `pip install -e .`.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from heartmetric_core import __version__, about, exporter, loader, pipeline, synthetic  # noqa: E402
+from heartmetric_core import __version__, about, exporter, loader, pipeline, provenance, synthetic  # noqa: E402
 
 app = FastAPI(
     title="HEARTMETRIC API",
@@ -49,7 +49,7 @@ async def root() -> Dict[str, Any]:
         "service": "HEARTMETRIC",
         "version": __version__,
         "docs": "/docs",
-        "endpoints": ["/api/health", "/api/sample", "/api/analyze", "/api/export"],
+        "endpoints": ["/api/health", "/api/sample", "/api/analyze", "/api/export", "/api/methodology"],
         **about(),
     }
 
@@ -121,6 +121,7 @@ def _options(source: Dict[str, Any]) -> Dict[str, Any]:
         "group_a": source.get("group_a", "forest"),
         "group_b": source.get("group_b", "urban"),
         "paired": bool(source.get("paired", False)),
+        "paired_by": str(source.get("paired_by", "auto")),
     }
 
 
@@ -142,9 +143,18 @@ async def analyze(request: Request) -> JSONResponse:
     return JSONResponse(bundle)
 
 
+@app.get("/api/methodology")
+async def methodology() -> JSONResponse:
+    """Formula, unit, reference and boundary for every indicator."""
+    return JSONResponse(provenance.methodology())
+
+
 @app.post("/api/export")
-async def export(request: Request, fmt: str = Query("xlsx", pattern="^(xlsx|csv|json)$")) -> StreamingResponse:
-    """Return the analysis as a downloadable workbook, CSV or JSON."""
+async def export(
+    request: Request,
+    fmt: str = Query("xlsx", pattern="^(xlsx|csv|json|md)$"),
+) -> StreamingResponse:
+    """Return the analysis as a downloadable workbook, CSV, JSON or Markdown."""
     result = await _read_input(request)
     bundle = pipeline.analyze_loaded(result)
 
@@ -157,6 +167,10 @@ async def export(request: Request, fmt: str = Query("xlsx", pattern="^(xlsx|csv|
         payload = exporter.to_csv(frame)
         media = "text/csv; charset=utf-8"
         filename = "heartmetric_readings.csv"
+    elif fmt == "md":
+        payload = exporter.to_markdown(bundle).encode("utf-8")
+        media = "text/markdown; charset=utf-8"
+        filename = "heartmetric_report.md"
     else:
         payload = exporter.to_json(bundle)
         media = "application/json"

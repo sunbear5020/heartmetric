@@ -27,6 +27,13 @@ HEARTMETRIC does **not** obtain blood pressure from a ring or a watch.
   one is present instead of converting between them.
 - Nightly Oura aggregates are placed at 03:00 local time of their `day`. No
   per-beat data is reconstructed.
+- **Time alignment never moves a value.** `align.align_streams` joins separate
+  streams on a tolerance the researcher chooses (±0–120 min, or a daily
+  aggregate). A metric is copied into a row only from a row of the same subject
+  within that tolerance; colliding values are dropped rather than overwritten,
+  unmatched rows are kept and flagged `align_unmatched`, and nothing is
+  interpolated or shifted in time. The per-stream match counts are exported with
+  every result so a reader can see how much of the table was actually joined.
 
 ## 2. No affiliation
 
@@ -61,7 +68,7 @@ approval and a de-identification plan before HEARTMETRIC is pointed at it.
 ## 6. Citation
 
     FEI · HEL Lab, Gyeongsang National University. (2026).
-    HEARTMETRIC: Environmental Cardiovascular Response Platform (v0.1.0) [Software].
+    HEARTMETRIC: Environmental Cardiovascular Response Platform (v0.2.0) [Software].
     https://github.com/sunbear5020/heartmetric
 
 Contact: bkim5020@gnu.ac.kr
