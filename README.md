@@ -27,7 +27,7 @@ python -m heartmetric_core --demo -o report.xlsx
 | 근거 | 문서 산문 | **`provenance.METHODOLOGY`** — 지표마다 수식·단위·참고문헌·경계, measured / derived / exploratory 구분 |
 | 내보내기 | xlsx · csv · json | + **Markdown 리포트**, Excel `Methodology`·`Alignment` 시트, `schema_version: "0.2.0"` 번들 |
 | 워크벤치 | 단일 파일 | **다중 파일 결합 업로드 + 허용 오차 선택**, 대응표본 전환, 환경 산점도(ρ·회귀선·기울기 p), 지표 정의 패널, JSON/ Markdown 내보내기 |
-| 테스트 | 45 | **84** |
+| 테스트 | 45 | **87** |
 
 ---
 
@@ -333,4 +333,4 @@ https://github.com/sunbear5020/heartmetric
 `.github/workflows/` 경로 쓰기를 허용하지 않아 템플릿으로 보관합니다.
 GitHub 웹에서 이 파일을 `.github/workflows/ci.yml`로 옮기면(내용 그대로)
 Actions가 다음 푸시부터 자동으로 돕니다. 로컬에서는 `python -m pytest`가 같은
-검사입니다(84 tests).
+검사입니다(87 tests).
