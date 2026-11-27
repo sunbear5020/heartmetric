@@ -5,7 +5,23 @@ pressure, wearable heart rate / HRV, and environmental exposure — onto one
 standard table so that the same analysis can be reproduced from a notebook, an
 API call or the in-browser workbench.
 
-v0.2.0 adds what a real study needs before a number can be trusted:
+v0.3.0 adds what a study reports after the first result — how many tests were
+run, which nights are actually covered, and how a nightly aggregate is joined to
+a morning cuff:
+
+* ``stats.benjamini_hochberg`` / ``stats.holm_bonferroni`` — multiple-comparison
+  control in the order of the input p-values, applied to every comparison table
+  (raw ``p_value`` beside ``p_holm`` and ``q_value_bh``);
+* ``align.align_streams(mode="overnight_morning")`` — anchor on a morning cuff
+  reading and attach only the rows recorded in the hours before it, with the lag
+  of every match and the reason of every miss in the report;
+* ``align.build_timeline_gap_map`` — a date × stream grid of matched / partial /
+  unmatched / missing cells (gaps are reported, never filled);
+* ``exporter`` — JSON bundle ``schema_version "0.3.0"`` carrying the gap map and
+  the adjusted p-values, plus a gap-map section in the Markdown report and a
+  ``GapMap`` sheet in the workbook.
+
+v0.2.0 added what a real study needs before a number can be trusted:
 
 * ``align.align_streams`` — join separate files by time proximity (or by day)
   with a tolerance the researcher chooses, keeping a per-stream match report;
@@ -30,7 +46,7 @@ License: MIT · Copyright (c) 2026 FEI · HEL Lab, Gyeongsang National Universit
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from . import (  # noqa: E402
     align,
@@ -43,7 +59,13 @@ from . import (  # noqa: E402
     stats,
     synthetic,
 )
-from .align import AlignedStreams, AlignmentReport, align_files, align_streams  # noqa: E402
+from .align import (  # noqa: E402
+    AlignedStreams,
+    AlignmentReport,
+    align_files,
+    align_streams,
+    build_timeline_gap_map,
+)
 from .cleaner import CleanReport, clean  # noqa: E402
 from .exporter import (  # noqa: E402
     methodology_frame,
@@ -70,19 +92,24 @@ from .pipeline import (  # noqa: E402
     analyze_loaded,
     analyze_streams,
     demo_bundle,
+    demo_overnight,
     demo_streams,
 )
 from .provenance import METHODOLOGY, REFERENCES, methodology  # noqa: E402
 from .schema import STANDARD_COLUMNS  # noqa: E402
 from .stats import (  # noqa: E402
+    adjust_p_values,
+    benjamini_hochberg,
     cohens_d,
     cohens_dz,
     compare,
     compare_table,
     correlation_profile,
     correlation_table,
+    holm_bonferroni,
     linear_regression,
     mann_whitney_u,
+    multiple_comparison_summary,
     paired_subject_compare,
     paired_ttest,
     pearson,
@@ -107,6 +134,7 @@ __all__ = [
     "analyze_loaded",
     "analyze_streams",
     "demo_bundle",
+    "demo_overnight",
     "demo_streams",
     "clean",
     "CleanReport",
@@ -120,6 +148,7 @@ __all__ = [
     "align_files",
     "AlignedStreams",
     "AlignmentReport",
+    "build_timeline_gap_map",
     "pulse_pressure",
     "mean_arterial_pressure",
     "nocturnal_dipping",
@@ -134,6 +163,10 @@ __all__ = [
     "sign_flip_permutation",
     "sign_test",
     "wilcoxon_signed_rank",
+    "benjamini_hochberg",
+    "holm_bonferroni",
+    "adjust_p_values",
+    "multiple_comparison_summary",
     "subject_pairs",
     "paired_subject_compare",
     "compare",

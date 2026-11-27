@@ -14,9 +14,11 @@ from .schema import CONDITION, SUBJECT, TIMESTAMP
 
 #: Version of the exported bundle format (independent of the package version so a
 #: reader can tell a schema change from a feature addition).
-SCHEMA_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.3.0"
 
-DEFAULT_METRICS = ["sbp", "dbp", "map", "pp", "hr", "rmssd", "sdnn"]
+#: Metrics compared between conditions. They are tested as one family, so the
+#: exported table carries BH-FDR q-values and Holm-adjusted p beside the raw p.
+DEFAULT_METRICS = ["sbp", "dbp", "map", "pp", "hr", "rmssd", "sdnn", "env_load"]
 
 
 def _json_safe(value: Any) -> Any:
@@ -84,6 +86,9 @@ def analyze(
         int(cleaned[SUBJECT].dropna().nunique()) if SUBJECT in cleaned.columns else 0
     )
     comparison_payload = comparison.to_dict(orient="records")
+    multiple_comparison = comparison.attrs.get("multiple_comparison") or stats.multiple_comparison_summary(
+        [row.get("p_value") for row in comparison_payload]
+    )
     bundle: Dict[str, Any] = {
         "meta": {
             "schema_version": SCHEMA_VERSION,
@@ -103,6 +108,7 @@ def analyze(
                 "n_subjects": subject_count,
             },
             "night_window": f"{night[0]:02d}:00–{night[1]:02d}:00",
+            "multiple_comparison": multiple_comparison,
             "alignment": alignment,
             "disclaimer": "Research summary of the submitted series. Not a medical diagnosis; "
             "a cuff measurement and a clinician remain the reference.",
@@ -112,6 +118,7 @@ def analyze(
         "conditions": conditions.to_dict(orient="records"),
         "exposure": exposure.to_dict(orient="records"),
         "comparison": comparison_payload,
+        "multiple_comparison": multiple_comparison,
         "daily": daily.to_dict(orient="records"),
         "correlations": correlations.to_dict(orient="records"),
         "series": series,
@@ -152,27 +159,47 @@ def analyze_streams(
     mode: str = "tolerance",
     anchor: str | None = None,
     conditions: Any = None,
+    overnight_lookback_hours: float = 14.0,
+    morning_window: tuple[int, int] = (5, 12),
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Align several streams/files and analyse the joined table in one call.
 
     ``streams`` may be paths, raw CSV/JSON text, load results or tables; when
     they are paths, ``conditions`` can label each file (``["forest", None]``).
+    ``mode="overnight_morning"`` anchors on a morning cuff reading and looks back
+    ``overnight_lookback_hours`` for the night's wearable and environment rows.
     """
     from . import align
 
+    align_kwargs = dict(
+        tolerance_minutes=tolerance_minutes,
+        mode=mode,
+        anchor=anchor,
+        overnight_lookback_hours=overnight_lookback_hours,
+        morning_window=morning_window,
+    )
     if conditions is not None:
         results = []
         for index, item in enumerate(streams):
             condition = conditions[index] if index < len(conditions) else None
             results.append(loader.load_file(item, condition=condition) if isinstance(item, (str, bytes)) else item)
-        aligned = align.align_streams(results, tolerance_minutes=tolerance_minutes, mode=mode, anchor=anchor)
+        aligned = align.align_streams(results, **align_kwargs)
+        gap_map = align.build_timeline_gap_map(results, aligned.report)
     else:
-        aligned = align.align_streams(streams, tolerance_minutes=tolerance_minutes, mode=mode, anchor=anchor)
+        aligned = align.align_streams(streams, **align_kwargs)
+        gap_map = align.build_timeline_gap_map(streams, aligned.report)
 
     bundle = analyze(aligned.frame, alignment=aligned.report.to_dict(), **kwargs)
     bundle["alignment"] = aligned.report.to_dict()
+    bundle["timeline_gap_map"] = gap_map
+    bundle["meta"]["timeline_gap_map"] = gap_map.get("summary", {})
     warnings = list(aligned.report.warnings)
+    if gap_map.get("summary", {}).get("missing_dates"):
+        warnings.append(
+            f"{gap_map['summary']['missing_dates']} date(s) inside the study span had no observation "
+            "from at least one stream — see the timeline gap map"
+        )
     if warnings:
         bundle["warnings"] = list(dict.fromkeys(bundle.get("warnings", []) + warnings))
     return bundle
@@ -185,6 +212,39 @@ def demo_bundle(**kwargs: Any) -> Dict[str, Any]:
     frame = synthetic.generate()
     bundle = analyze(frame, metadata={"data": "synthetic", **synthetic.metadata()}, **kwargs)
     bundle["meta"]["demo"] = True
+    return bundle
+
+
+def demo_overnight(**kwargs: Any) -> Dict[str, Any]:
+    """The demo split into a nightly wearable file, a morning cuff file and a
+    morning environment file, joined with the ``overnight_morning`` preset.
+
+    This is the pattern a single-subject Oura + cuff study actually produces:
+    the ring writes one aggregate for the night, the person measures BP after
+    waking, and nothing shares a timestamp.
+    """
+    from . import align, synthetic
+
+    frame = synthetic.generate()
+    night = frame[frame[TIMESTAMP].dt.hour == 3][[TIMESTAMP, "hr", "rmssd", "sdnn"]].dropna(subset=["rmssd"]).copy()
+    morning = frame[frame[TIMESTAMP].dt.hour == 7][[TIMESTAMP, "condition", "sbp", "dbp"]].dropna(subset=["sbp"]).copy()
+    evening = frame[frame[TIMESTAMP].dt.hour.isin([21, 3, 7])][
+        [TIMESTAMP, "temp_c", "humidity_pct", "pm25", "pm10", "green_index", "forest"]
+    ].copy()
+    aligned = align.align_streams(
+        [("cuff_morning.csv", morning), ("oura_night.json", night), ("morning_environment.csv", evening)],
+        mode="overnight_morning",
+    )
+    gap_map = align.build_timeline_gap_map(
+        [("cuff_morning.csv", morning), ("oura_night.json", night), ("morning_environment.csv", evening)],
+        aligned.report,
+    )
+    bundle = analyze(aligned.frame, alignment=aligned.report.to_dict(), **kwargs)
+    bundle["meta"]["demo"] = True
+    bundle["meta"]["input"] = {"data": "synthetic", "streams": 3, "preset": "overnight_morning", **synthetic.metadata()}
+    bundle["alignment"] = aligned.report.to_dict()
+    bundle["timeline_gap_map"] = gap_map
+    bundle["meta"]["timeline_gap_map"] = gap_map.get("summary", {})
     return bundle
 
 
@@ -204,12 +264,12 @@ def demo_streams(**kwargs: Any) -> Dict[str, Any]:
     environment[TIMESTAMP] = pd.to_datetime(environment[TIMESTAMP]) + pd.Timedelta(minutes=5)
 
     tolerance = kwargs.pop("tolerance_minutes", 30.0)
-    aligned = align.align_streams(
-        [("cuff_bp.csv", bp), ("wearable.json", wearable), ("environment.csv", environment)],
-        tolerance_minutes=tolerance,
-    )
+    streams = [("cuff_bp.csv", bp), ("wearable.json", wearable), ("environment.csv", environment)]
+    aligned = align.align_streams(streams, tolerance_minutes=tolerance)
     bundle = analyze(aligned.frame, alignment=aligned.report.to_dict(), **kwargs)
     bundle["meta"]["demo"] = True
     bundle["meta"]["input"] = {"data": "synthetic", "streams": 3, **synthetic.metadata()}
     bundle["alignment"] = aligned.report.to_dict()
+    bundle["timeline_gap_map"] = align.build_timeline_gap_map(streams, aligned.report)
+    bundle["meta"]["timeline_gap_map"] = bundle["timeline_gap_map"].get("summary", {})
     return bundle

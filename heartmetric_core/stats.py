@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, Sequence
+from typing import Any, Dict, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -447,6 +447,122 @@ def wilcoxon_signed_rank(group_a: Iterable[float], group_b: Iterable[float]) -> 
     return float(w), float(min(max(p, 0.0), 1.0))
 
 
+# ------------------------------------------------- multiple comparison control
+
+
+MULTIPLE_COMPARISON_METHODS: tuple[str, ...] = ("bh", "holm")
+
+
+def _p_array(p_values: Iterable[float]) -> np.ndarray:
+    """p-values as a float array in input order; None stays missing (NaN)."""
+    out = []
+    for value in p_values:
+        if value is None:
+            out.append(float("nan"))
+            continue
+        try:
+            out.append(float(value))
+        except (TypeError, ValueError):
+            out.append(float("nan"))
+    return np.asarray(out, dtype=float)
+
+
+def benjamini_hochberg(p_values: Iterable[float], alpha: float = 0.05) -> np.ndarray:
+    """Benjamini–Hochberg step-up FDR-adjusted p-values (``q`` values).
+
+    For ``m`` tested hypotheses ordered by ascending p, ``q_(i) = m · p_(i) / i``
+    made monotone with ``q_(i) = min(q_(i), q_(i+1))`` so that q never decreases as
+    p grows, then clipped to [0, 1]. Reject hypothesis *i* when ``q_(i) <= alpha``.
+    The result keeps the order of the input p-values; a missing p (``None``/NaN)
+    yields NaN and is left out of the family size, because a test that could not
+    run is not a test that was run.
+
+    Reference: Benjamini, Y. & Hochberg, Y. (1995). Controlling the false
+    discovery rate: a practical and powerful approach to multiple testing.
+    Journal of the Royal Statistical Society B 57(1):289–300.
+    """
+    p = _p_array(p_values)
+    q = np.full(p.shape, np.nan, dtype=float)
+    valid = np.isfinite(p)
+    m = int(valid.sum())
+    if m == 0:
+        return q
+    pv = np.clip(p[valid], 0.0, 1.0)
+    order = np.argsort(pv, kind="mergesort")
+    ranked = pv[order]
+    ranks = np.arange(1, m + 1, dtype=float)
+    adjusted = ranked * m / ranks
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+    out = np.empty(m, dtype=float)
+    out[order] = np.clip(adjusted, 0.0, 1.0)
+    q[valid] = out
+    return q
+
+
+def holm_bonferroni(p_values: Iterable[float], alpha: float = 0.05) -> np.ndarray:
+    """Holm–Bonferroni step-down adjusted p-values.
+
+    For ``m`` hypotheses ordered by ascending p,
+    ``p_holm_(i) = max_{j <= i} min(1, (m − j + 1) · p_(j))``. Reject hypothesis
+    *i* when ``p_holm_(i) <= alpha``; the procedure controls the family-wise error
+    rate under arbitrary dependence. The result keeps the order of the input
+    p-values; missing p-values stay NaN and are left out of ``m``.
+
+    Reference: Holm, S. (1979). A simple sequentially rejective multiple test
+    procedure. Scandinavian Journal of Statistics 6(2):65–70.
+    """
+    p = _p_array(p_values)
+    adjusted_p = np.full(p.shape, np.nan, dtype=float)
+    valid = np.isfinite(p)
+    m = int(valid.sum())
+    if m == 0:
+        return adjusted_p
+    pv = np.clip(p[valid], 0.0, 1.0)
+    order = np.argsort(pv, kind="mergesort")
+    ranked = pv[order]
+    multipliers = m - np.arange(m, dtype=float)
+    adjusted = np.maximum.accumulate(ranked * multipliers)
+    out = np.empty(m, dtype=float)
+    out[order] = np.clip(adjusted, 0.0, 1.0)
+    adjusted_p[valid] = out
+    return adjusted_p
+
+
+def adjust_p_values(
+    p_values: Iterable[float],
+    method: str = "bh",
+    alpha: float = 0.05,
+) -> np.ndarray:
+    """Adjusted p-values for ``method`` (``"bh"`` or ``"holm"``)."""
+    key = str(method or "bh").strip().lower()
+    if key in {"bh", "fdr", "benjamini_hochberg", "benjamini-hochberg"}:
+        return benjamini_hochberg(p_values, alpha)
+    if key in {"holm", "holm_bonferroni", "holm-bonferroni"}:
+        return holm_bonferroni(p_values, alpha)
+    raise ValueError(f"unsupported multiple-comparison method: {method}")
+
+
+def multiple_comparison_summary(p_values: Iterable[float], alpha: float = 0.05) -> Dict[str, Any]:
+    """Family size and how many hypotheses survive each correction.
+
+    One place to state how many tests were run at once, so a report cannot
+    present one uncorrected p-value as if it came from a single test.
+    """
+    p = _p_array(p_values)
+    valid = np.isfinite(p)
+    q = benjamini_hochberg(p, alpha)
+    holm = holm_bonferroni(p, alpha)
+    return {
+        "method": "benjamini_hochberg",
+        "family": "metrics compared between the two conditions of this table",
+        "family_size": int(valid.sum()),
+        "alpha": float(alpha),
+        "tests_unavailable": int((~valid).sum()),
+        "rejected_bh_fdr": int(np.sum(q[valid] <= alpha)) if valid.any() else 0,
+        "rejected_holm_fw": int(np.sum(holm[valid] <= alpha)) if valid.any() else 0,
+    }
+
+
 # ------------------------------------------------------- paired by subject
 
 
@@ -626,6 +742,7 @@ def compare_table(
             else "row"
         )
     rows = []
+    raw_p_values: list[float] = []
     skipped: Dict[str, str] = {}
     labels = frame[group_column].astype("object")
     for metric in metric_columns:
@@ -653,6 +770,7 @@ def compare_table(
             result["paired_by"] = "row" if paired else "unpaired"
             result["n_subjects"] = None
             result["available"] = True
+        raw_p_values.append(float(result["p_value"]))
         rows.append(
             {
                 "metric": metric,
@@ -676,6 +794,17 @@ def compare_table(
             }
         )
     table = pd.DataFrame(rows)
+    if not table.empty:
+        # Every metric in this table was tested against the same two conditions,
+        # so the family is the table itself and both corrections are reported
+        # beside the raw p. No correction is applied silently.
+        p_holm = holm_bonferroni(raw_p_values)
+        q_bh = benjamini_hochberg(raw_p_values)
+        table["p_holm"] = [_p_round(float(v)) for v in p_holm]
+        table["q_value_bh"] = [_p_round(float(v)) for v in q_bh]
+        table["significant_holm_05"] = [bool(np.isfinite(v) and v <= 0.05) for v in p_holm]
+        table["significant_fdr_05"] = [bool(np.isfinite(v) and v <= 0.05) for v in q_bh]
+        table.attrs["multiple_comparison"] = multiple_comparison_summary(raw_p_values)
     if skipped:
         table.attrs["skipped"] = skipped
     if paired and not has_subject:

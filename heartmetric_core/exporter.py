@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
@@ -20,7 +21,7 @@ import pandas as pd
 from .schema import STANDARD_COLUMNS
 
 LICENSE_LINE = "MIT License · Copyright (c) 2026 FEI · HEL Lab, Gyeongsang National University"
-SCHEMA_VERSION_FALLBACK = "0.2.0"
+SCHEMA_VERSION_FALLBACK = "0.3.0"
 
 
 def _frame_from_records(records: Any, columns: list[str] | None = None) -> pd.DataFrame:
@@ -62,6 +63,28 @@ def methodology_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def gap_map_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
+    """The date × stream gap grid as one row per cell."""
+    block = bundle.get("timeline_gap_map") or {}
+    if not isinstance(block, dict):
+        return pd.DataFrame()
+    rows = []
+    for cell in block.get("cells", []):
+        rows.append(
+            {
+                "date": cell.get("date"),
+                "stream": cell.get("stream"),
+                "role": cell.get("role"),
+                "status": cell.get("status"),
+                "rows": cell.get("rows"),
+                "matched_rows": cell.get("matched_rows"),
+                "unmatched_rows": cell.get("unmatched_rows"),
+                "subjects": ", ".join(cell.get("subjects") or []),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def alignment_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
     """Per-stream alignment counts, one row per input stream."""
     block = bundle.get("alignment") or (bundle.get("meta") or {}).get("alignment")
@@ -79,6 +102,8 @@ def alignment_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
                 "match_rate_pct": stream.get("match_rate_pct"),
                 "mode": block.get("mode"),
                 "tolerance_minutes": block.get("tolerance_minutes"),
+                "overnight_lookback_hours": block.get("overnight_lookback_hours"),
+                "lag_median_minutes": (block.get("lag_minutes") or {}).get("median"),
             }
         )
     return pd.DataFrame(rows)
@@ -102,6 +127,7 @@ def bundle_frames(bundle: Mapping[str, Any]) -> Dict[str, pd.DataFrame]:
         "Summary": pd.DataFrame(summary_rows),
         "Quality": pd.DataFrame(quality_rows),
         "Alignment": alignment_frame(bundle),
+        "GapMap": gap_map_frame(bundle),
         "Conditions": _frame_from_records(bundle.get("conditions")),
         "Exposure": _frame_from_records(bundle.get("exposure")),
         "Comparison": _frame_from_records(bundle.get("comparison")),
@@ -132,7 +158,7 @@ def _readme_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
         ("", ""),
         (
             "Sheets",
-            "Summary · Quality · Alignment · Conditions · Exposure · Comparison · Daily · "
+            "Summary · Quality · Alignment · GapMap · Conditions · Exposure · Comparison · Daily · "
             "Correlations · Methodology · Readings",
         ),
         ("Indices", "MAP = DBP + (SBP−DBP)/3 · PP = SBP−DBP · Dipping = (day−night)/day × 100"),
@@ -144,6 +170,11 @@ def _readme_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
             "Welch t (independent) · paired t with d_z, sign-flip permutation and exact sign test "
             "(subject-level when subject_id exists) · Pearson r + Spearman ρ + OLS slope",
         ),
+        (
+            "Multiple comparison",
+            "The metrics of one comparison table are one family: raw p is reported beside "
+            "Holm-adjusted p and Benjamini–Hochberg q (BH 1995; Holm 1979) — see Comparison",
+        ),
         ("Correlation caveat", "Correlation is not causation; autocorrelated series shrink the effective sample size."),
     ]
     if alignment:
@@ -153,6 +184,26 @@ def _readme_frame(bundle: Mapping[str, Any]) -> pd.DataFrame:
                 f"{alignment.get('mode')} · tolerance {alignment.get('tolerance_minutes')} min · "
                 f"matched {alignment.get('anchors_matched')}/{alignment.get('anchors')} "
                 f"({alignment.get('match_rate_pct')}%)",
+            )
+        )
+        if alignment.get("mode") == "overnight_morning":
+            lag = alignment.get("lag_minutes") or {}
+            rows.append(
+                (
+                    "Overnight preset",
+                    f"morning cuff {alignment.get('morning_window')} · look-back "
+                    f"{alignment.get('overnight_lookback_hours')} h · median lag "
+                    f"{lag.get('median')} min (n={lag.get('n')})",
+                )
+            )
+    gap_summary = bundle.get("timeline_gap_map", {}).get("summary") if isinstance(bundle.get("timeline_gap_map"), dict) else None
+    if gap_summary:
+        rows.append(
+            (
+                "Gap map",
+                f"{gap_summary.get('dates')} days × {gap_summary.get('streams')} streams · "
+                f"matched {gap_summary.get('cells_matched')} / partial {gap_summary.get('cells_partial')} / "
+                f"unmatched {gap_summary.get('cells_unmatched')} / missing {gap_summary.get('cells_missing')}",
             )
         )
     rows += [
@@ -179,7 +230,7 @@ def to_excel(
         bundle = {"series": bundle.to_dict(orient="records"), "meta": {}}
     frames = bundle_frames(bundle)
     order = sheet_order or [
-        "Summary", "Quality", "Alignment", "Conditions", "Exposure", "Comparison",
+        "Summary", "Quality", "Alignment", "GapMap", "Conditions", "Exposure", "Comparison",
         "Daily", "Correlations", "Methodology", "Readings",
     ]
     buffer = io.BytesIO()
@@ -251,6 +302,30 @@ def _fmt(value: Any, digits: int = 1) -> str:
     return str(value)
 
 
+#: Columns whose value is a p-value or an adjusted p-value: 0.0000 is not a
+#: report of certainty, so these are printed with scientific notation when tiny.
+P_VALUE_COLUMNS = frozenset(
+    {"p_value", "p_holm", "q_value_bh", "permutation_p", "sign_test_p",
+     "pearson_p", "spearman_p", "slope_p", "mann_whitney_p"}
+)
+
+
+def _fmt_p(value: Any) -> str:
+    if value is None or value == "":
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(number):
+        return "—"
+    if number == 0:
+        return "<1e-300"
+    if number < 0.0001:
+        return f"{number:.2e}"
+    return f"{number:.4f}"
+
+
 def _markdown_table(frame: pd.DataFrame, columns: list[str] | None = None, digits: int = 2) -> str:
     if frame is None or frame.empty:
         return "_no rows_"
@@ -264,7 +339,12 @@ def _markdown_table(frame: pd.DataFrame, columns: list[str] | None = None, digit
         cells = []
         for column in columns:
             value = row[column]
-            cells.append(_fmt(value, digits) if isinstance(value, float) else ("—" if value is None or value == "" else str(value)))
+            if column in P_VALUE_COLUMNS:
+                cells.append(_fmt_p(value))
+            elif isinstance(value, float):
+                cells.append(_fmt(value, digits))
+            else:
+                cells.append("—" if value is None or value == "" else str(value))
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
@@ -278,6 +358,8 @@ def to_markdown(bundle: Mapping[str, Any], path: str | Path | None = None) -> st
     correlations = _frame_from_records(bundle.get("correlations"))
     conditions = _frame_from_records(bundle.get("conditions"))
     alignment = bundle.get("alignment") or meta.get("alignment") or {}
+    gap_map = bundle.get("timeline_gap_map") if isinstance(bundle.get("timeline_gap_map"), dict) else {}
+    multiple_comparison = bundle.get("multiple_comparison") or meta.get("multiple_comparison") or {}
     methodology = methodology_frame(bundle)
     comparison_meta = meta.get("comparison") or {}
 
@@ -285,7 +367,7 @@ def to_markdown(bundle: Mapping[str, Any], path: str | Path | None = None) -> st
     lines.append("# HEARTMETRIC 분석 리포트")
     lines.append("")
     lines.append(
-        f"**FEI · HEL Lab, 경상국립대학교** · v{meta.get('heartmetric_version', '0.2.0')} "
+        f"**FEI · HEL Lab, 경상국립대학교** · v{meta.get('heartmetric_version', '0.3.0')} "
         f"(bundle schema {meta.get('schema_version', SCHEMA_VERSION_FALLBACK)})  "
     )
     lines.append(f"생성: {meta.get('generated_at', '—')} · 100% 로컬 실행 · MIT License")
@@ -312,11 +394,25 @@ def to_markdown(bundle: Mapping[str, Any], path: str | Path | None = None) -> st
     )
     lines.append(f"- 최대 공백: {quality.get('max_gap_hours', '—')}시간 (보정하지 않음)")
     if alignment:
+        tolerance_label = "되돌아보기" if alignment.get("mode") == "overnight_morning" else "허용 오차"
         lines.append(
-            f"- 스트림 결합: {alignment.get('mode')} · 허용 오차 {alignment.get('tolerance_minutes')}분 · "
+            f"- 스트림 결합: {alignment.get('mode')} · {tolerance_label} {alignment.get('tolerance_minutes')}분 · "
             f"앵커 매칭 {alignment.get('anchors_matched')}/{alignment.get('anchors')}"
             f"({alignment.get('match_rate_pct')}%)"
         )
+        if alignment.get("mode") == "overnight_morning":
+            lag = alignment.get("lag_minutes") or {}
+            window = alignment.get("morning_window") or []
+            window_text = f"{window[0]:02d}:00–{window[1]:02d}:00" if len(window) == 2 else "—"
+            lines.append(
+                f"  - 야간→아침 프리셋: 아침 창 {window_text} · 되돌아보기 "
+                f"{alignment.get('overnight_lookback_hours')}시간 · lag 중앙값 {lag.get('median')}분 (n={lag.get('n')})"
+            )
+            reasons = alignment.get("unmatched_reasons") or {}
+            if reasons:
+                lines.append(
+                    "  - 미결합 사유: " + ", ".join(f"{k} {v}건" for k, v in reasons.items())
+                )
         for stream in alignment.get("streams", []):
             lines.append(
                 f"  - {stream.get('name')} ({stream.get('role')}): {stream.get('matched_rows')}/{stream.get('rows')}행 결합"
@@ -358,14 +454,25 @@ def to_markdown(bundle: Mapping[str, Any], path: str | Path | None = None) -> st
             _markdown_table(
                 comparison,
                 ["metric", "n_a", "mean_a", "n_b", "mean_b", "diff", "cohens_d", "cohens_dz",
-                 "effect", "p_value", "permutation_p", "ci_low", "ci_high"],
+                 "effect", "p_value", "p_holm", "q_value_bh", "significant_fdr_05",
+                 "permutation_p", "ci_low", "ci_high"],
             )
         )
         lines.append("")
         lines.append(
             "효과크기: |d| < 0.2 무시 · 0.2–0.5 작음 · 0.5–0.8 중간 · ≥ 0.8 큼. "
-            "p는 다중비교 보정 전 값입니다. 대응표본에서는 `cohens_dz`를 읽으세요."
+            "p는 보정 전 값이고, 같은 표의 지표들을 한 가족으로 본 **Holm 보정 p**와 "
+            "**BH-FDR q**를 나란히 표시합니다(`significant_fdr_05`는 q ≤ 0.05). "
+            "대응표본에서는 `cohens_dz`를 읽으세요."
         )
+        if multiple_comparison:
+            lines.append("")
+            lines.append(
+                f"다중 비교: 가족 크기 m = {multiple_comparison.get('family_size')} · alpha "
+                f"{multiple_comparison.get('alpha')} · BH-FDR 유의 {multiple_comparison.get('rejected_bh_fdr')}건 · "
+                f"Holm 유의 {multiple_comparison.get('rejected_holm_fw')}건 "
+                "(Benjamini & Hochberg 1995; Holm 1979)"
+            )
     else:
         lines.append("_조건 두 개 이상의 데이터가 있어야 비교표가 만들어집니다._")
     lines.append("")
@@ -389,12 +496,40 @@ def to_markdown(bundle: Mapping[str, Any], path: str | Path | None = None) -> st
         lines.append("_환경 지표와 심혈관 지표가 함께 있는 행이 부족합니다._")
     lines.append("")
 
-    lines.append("## 5. 조건별 평균")
+    lines.append("## 5. 스트림 타임라인 갭 맵")
+    lines.append("")
+    gap_summary = (gap_map or {}).get("summary") or {}
+    if gap_summary and gap_summary.get("cells"):
+        lines.append(
+            f"{gap_summary.get('dates')}일 × {gap_summary.get('streams')}개 스트림 · "
+            f"매칭 {gap_summary.get('cells_matched')} · 부분 {gap_summary.get('cells_partial')} · "
+            f"미결합 {gap_summary.get('cells_unmatched')} · 결측 {gap_summary.get('cells_missing')} "
+            f"(커버리지 {gap_summary.get('coverage_pct')}%)"
+        )
+        lines.append("")
+        lines.append("| 스트림 | 역할 | 관측일 | 결측일 | 결합 | 미결합 | 결측 | 최장 연속 결측 | 결합률 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for name, entry in (gap_summary.get("per_stream") or {}).items():
+            lines.append(
+                f"| {name} | {entry.get('role')} | {entry.get('dates_present')} | {entry.get('dates_missing')} | "
+                f"{entry.get('cells_matched')} | {entry.get('cells_unmatched')} | {entry.get('cells_missing')} | "
+                f"{entry.get('longest_gap_days')}일 | {entry.get('join_rate_pct')}% |"
+            )
+        lines.append("")
+        lines.append(
+            "관측이 없는 칸은 **결측**이며 보간·대체하지 않습니다. 스트림마다 관측 기간이 달라 "
+            "앞뒤 날짜가 결측으로 보이는 것은 그 날 그 스트림이 없었다는 뜻입니다."
+        )
+    else:
+        lines.append("_스트림을 2개 이상 결합하면 일자×스트림 갭 맵이 만들어집니다._")
+    lines.append("")
+
+    lines.append("## 6. 조건별 평균")
     lines.append("")
     lines.append(_markdown_table(conditions))
     lines.append("")
 
-    lines.append("## 6. 지표 정의와 경계")
+    lines.append("## 7. 지표 정의와 경계")
     lines.append("")
     lines.append("| 지표 | 구분 | 수식 | 경계 |")
     lines.append("| --- | --- | --- | --- |")
@@ -403,7 +538,7 @@ def to_markdown(bundle: Mapping[str, Any], path: str | Path | None = None) -> st
             f"| {row.get('label')} | {row.get('kind')} | {row.get('formula') or '—'} | {row.get('boundary') or '—'} |"
         )
     lines.append("")
-    lines.append(f"인용: FEI · HEL Lab, Gyeongsang National University. (2026). HEARTMETRIC (v{meta.get('heartmetric_version', '0.2.0')}). MIT License.")
+    lines.append(f"인용: FEI · HEL Lab, Gyeongsang National University. (2026). HEARTMETRIC (v{meta.get('heartmetric_version', '0.3.0')}). MIT License.")
     lines.append("")
 
     text = "\n".join(lines)

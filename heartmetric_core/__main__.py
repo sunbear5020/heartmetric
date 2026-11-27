@@ -32,6 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="split the demo into BP / wearable / environment files and align them again",
     )
+    source.add_argument(
+        "--demo-overnight",
+        action="store_true",
+        help="split the demo into a nightly wearable file and a morning cuff file and join them with "
+        "the overnight_morning preset",
+    )
     parser.add_argument("--out", "-o", default="heartmetric_report.xlsx", help="output .xlsx / .csv / .json / .md")
     parser.add_argument("--condition", default=None, help="label every row of the input with this condition")
     parser.add_argument(
@@ -61,9 +67,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--align-mode",
-        choices=["tolerance", "daily"],
+        choices=["tolerance", "daily", "overnight_morning"],
         default="tolerance",
-        help="join single measurements by time proximity, or aggregate per subject and day first",
+        help="join single measurements by time proximity, aggregate per subject and day first, or "
+        "anchor on a morning cuff and look back over the night",
+    )
+    parser.add_argument(
+        "--overnight-lookback-hours",
+        type=float,
+        default=14.0,
+        help="with --align-mode overnight_morning, how far back from the morning cuff the night may reach (default: 14)",
+    )
+    parser.add_argument(
+        "--morning-window",
+        default="5-12",
+        help="with --align-mode overnight_morning, cuff hours that become anchors, e.g. '5-12' (end exclusive)",
     )
     parser.add_argument(
         "--anchor",
@@ -91,6 +109,21 @@ def _print_bundle(bundle: dict) -> None:
                 f"  {stream['name']} ({stream['role']}): {stream['matched_rows']}/{stream['rows']} rows joined, "
                 f"{stream['unmatched_rows']} unmatched"
             )
+        if alignment.get("mode") == "overnight_morning":
+            lag = alignment.get("lag_minutes") or {}
+            print(
+                f"  overnight preset: morning window {alignment.get('morning_window')}, look-back "
+                f"{alignment.get('overnight_lookback_hours')} h, lag median {lag.get('median')} min (n={lag.get('n')})"
+            )
+            for reason, count in (alignment.get("unmatched_reasons") or {}).items():
+                print(f"  unmatched {reason}: {count}")
+        gap = bundle.get("timeline_gap_map") or {}
+        summary = gap.get("summary") or {}
+        if summary.get("cells"):
+            print(
+                f"  gap map: {summary['dates']} days × {summary['streams']} streams · matched {summary['cells_matched']} · "
+                f"partial {summary['cells_partial']} · unmatched {summary['cells_unmatched']} · missing {summary['cells_missing']}"
+            )
     if summary.get("sbp") is not None:
         print(f"mean SBP/DBP: {summary.get('sbp')} / {summary.get('dbp')} mmHg · MAP {summary.get('map')} · PP {summary.get('pp')}")
     if (summary.get("hrv_recovery") or {}).get("available"):
@@ -114,9 +147,14 @@ def _print_bundle(bundle: dict) -> None:
         dz_text = f", d_z={dz}" if dz is not None else ""
         perm = row.get("permutation_p")
         perm_text = f", perm p={perm}" if perm is not None else ""
+        q_bh = row.get("q_value_bh")
+        holm = row.get("p_holm")
+        adjusted = ""
+        if q_bh is not None or holm is not None:
+            adjusted = f", q(BH)={q_bh}, p(Holm)={holm}"
         print(
             f"  {row['metric']:>5}: {row['mean_a']} vs {row['mean_b']} "
-            f"(Δ {row['diff']}, d={row['cohens_d']}{dz_text}, {p_text}{perm_text}, by {row.get('paired_by')})"
+            f"(Δ {row['diff']}, d={row['cohens_d']}{dz_text}, {p_text}{perm_text}{adjusted}, by {row.get('paired_by')})"
         )
     correlations = bundle.get("correlations") or []
     if correlations:
@@ -135,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.demo:
         bundle = pipeline.demo_bundle(**common)
+    elif args.demo_overnight:
+        bundle = pipeline.demo_overnight(**common)
     elif args.demo_streams:
         bundle = pipeline.demo_streams(tolerance_minutes=args.tolerance_minutes, **common)
     else:
@@ -144,12 +184,16 @@ def main(argv: list[str] | None = None) -> int:
             if args.conditions:
                 parts = [part.strip() or None for part in args.conditions.split(",")]
                 conditions = parts
+            morning = args.morning_window.split("-")
+            morning_window = (int(morning[0]), int(morning[1])) if len(morning) == 2 else (5, 12)
             bundle = pipeline.analyze_streams(
                 paths,
                 tolerance_minutes=args.tolerance_minutes,
                 mode=args.align_mode,
                 anchor=args.anchor,
                 conditions=conditions,
+                overnight_lookback_hours=args.overnight_lookback_hours,
+                morning_window=morning_window,
                 **common,
             )
             for path in paths:

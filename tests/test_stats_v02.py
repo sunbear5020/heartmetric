@@ -189,10 +189,10 @@ def test_env_load_uses_only_environmental_inputs():
 
 def test_pipeline_bundle_has_v02_sections(cohort):
     bundle = pipeline.analyze(cohort, paired=True)
-    assert bundle["meta"]["schema_version"] == "0.2.0"
+    assert bundle["meta"]["schema_version"] == "0.3.0"
     assert bundle["meta"]["comparison"]["paired_by"] == "subject"
     assert bundle["meta"]["comparison"]["n_subjects"] == 6
-    assert bundle["methodology"]["version"] == "0.2.0"
+    assert bundle["methodology"]["version"] == "0.3.0"
     assert "env_load" in {row["x"] for row in bundle["correlations"]}
     assert bundle["comparison"][0]["cohens_dz"] is not None
     assert bundle["comparison"][0]["permutation_p"] is not None

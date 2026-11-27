@@ -85,7 +85,7 @@ def test_bad_body_is_422():
 
 def test_methodology_endpoint():
     payload = client.get("/api/methodology").json()
-    assert payload["version"] == "0.2.0"
+    assert payload["version"] == "0.3.0"
     assert payload["indicators"]["sbp"]["kind"] == "measured"
     assert payload["indicators"]["env_load"]["kind"] == "exploratory"
 
@@ -105,4 +105,4 @@ def test_analyze_reports_paired_by():
     response = client.post("/api/analyze", json={"records": records, "paired": True})
     bundle = response.json()
     assert bundle["meta"]["comparison"]["paired_by"] == "subject"
-    assert bundle["meta"]["schema_version"] == "0.2.0"
+    assert bundle["meta"]["schema_version"] == "0.3.0"

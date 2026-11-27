@@ -1,4 +1,4 @@
-# HEARTMETRIC Core (v0.2.0)
+# HEARTMETRIC Core (v0.3.0)
 
 **Environmental Cardiovascular Response Platform**
 Blood Pressure · Heart Rate · HRV · Environmental Exposure
@@ -15,6 +15,17 @@ Blood Pressure · Heart Rate · HRV · Environmental Exposure
 pip install -e .
 python -m heartmetric_core --demo -o report.xlsx
 ```
+
+## v0.3.0에서 달라진 것
+
+| 영역 | v0.2.0 | v0.3.0 |
+| --- | --- | --- |
+| 다중 비교 | 없음(지표마다 p를 따로 읽음) | **BH-FDR `q_value_bh` · Holm `p_holm`** — 비교표의 지표를 한 가족으로 보고 원 p 옆에 함께 보고, `significant_fdr_05` 플래그와 가족 크기 `m`을 번들에 기록 |
+| 야간→아침 결합 | 넓은 허용 오차나 일별 집계로 우회 | **`mode="overnight_morning"`** — 아침 커프(05:00–12:00)를 앵커로 직전 14시간의 야간 행만 결합, 매치마다 `lag_minutes`·미결합 사유 기록 |
+| 타임라인 | 스트림별 총계만 | **스트림 타임라인 갭 맵** — 일자×스트림 격자에 matched / partial / unmatched / missing, 스트림별 최장 연속 결측 |
+| 내보내기 | schema `0.2.0`, 10시트, 6장 | **schema `0.3.0`**, `GapMap` 시트·갭 맵 절 포함, Markdown 7장, BH/Holm 열 |
+| 워크벤치 | 허용 오차·일별 | **야간→아침 프리셋**, **갭 맵 패널**, **BH q-값 열** |
+| 테스트 | 87 | **124** |
 
 ## v0.2.0에서 달라진 것
 
@@ -96,6 +107,21 @@ python -m heartmetric_core -i cohort.csv --paired --paired-by subject -o cohort.
 결합/미결합 행 수와 매칭률로 출력되고, 번들의 `alignment` 블록과 Excel
 `Alignment` 시트에 같은 값이 남습니다.
 
+### CLI — 야간 웨어러블 + 아침 커프 (v0.3)
+
+```bash
+# 오우라 야간 집계(03:00)와 아침 커프(07:10)를 직전 14시간 창으로 결합
+python -m heartmetric_core \
+  -i examples/streams/morning_cuff.csv \
+  -i examples/streams/night_wearable.csv \
+  -i examples/streams/morning_environment.csv \
+  --align-mode overnight_morning -o overnight.md
+
+# 아침 창·되돌아보기 시간 바꾸기 (05–12시, 14시간이 기본)
+python -m heartmetric_core -i cuff.csv -i oura.json \
+  --align-mode overnight_morning --morning-window 6-10 --overnight-lookback-hours 12 -o night.md
+```
+
 ### CLI — 내 파일 하나
 
 ```bash
@@ -150,7 +176,7 @@ curl -X POST "localhost:8000/api/export?fmt=md" -F file=@my_export.csv -o report
 | --- | --- | --- |
 | GET | `/api/health` | 상태·버전 |
 | GET | `/api/sample?days=14&seed=5020` | 합성 데모 레코드 |
-| GET | `/api/methodology` | 지표별 수식·단위·근거·경계(v0.2) |
+| GET | `/api/methodology` | 지표별 수식·단위·근거·경계(v0.3) |
 | POST | `/api/analyze` | JSON records / multipart 파일 → 분석 번들 |
 | POST | `/api/export?fmt=xlsx\|csv\|json\|md` | 같은 입력 → 파일 다운로드 |
 
@@ -186,7 +212,8 @@ curl -X POST "localhost:8000/api/export?fmt=md" -F file=@my_export.csv -o report
 
 ```python
 align_streams(streams, tolerance_minutes=30, mode="tolerance", anchor=None,
-              subject_column="subject_id")
+              subject_column="subject_id",
+              overnight_lookback_hours=14, morning_window=(5, 12))
 ```
 
 | 규칙 | 동작 |
@@ -197,10 +224,25 @@ align_streams(streams, tolerance_minutes=30, mode="tolerance", anchor=None,
 | 미결합 | 버리지 않고 별도 행으로 유지 + `align_unmatched` 플래그 |
 | 피험자 | 양쪽에 `subject_id`가 있으면 반드시 일치. 한쪽에만 없으면 표 전체가 단일 피험자일 때만 결합(경고 기록), 여러 피험자면 결합 거부 |
 | 일별 모드 | `mode="daily"` — 피험자·날짜별 평균으로 집계한 뒤 날짜로 결합 |
-| 보고 | 스트림별 `rows` / `matched_rows` / `unmatched_rows` / `match_rate_pct`, 앵커 매칭률 |
+| 야간 모드 | `mode="overnight_morning"` — 05:00–12:00 커프를 앵커로, **직전** 14시간(`overnight_lookback_hours`) 안의 행만 역할별 1개씩 결합. 커프 뒤에 찍힌 값은 붙이지 않으며, 매치마다 `lag_minutes`, 못 붙였으면 사유(`outside_lookback_window` · `only_after_anchor` · `no_row_for_this_subject` · `already_matched_to_another_anchor`)를 남김 |
+| 보고 | 스트림별 `rows` / `matched_rows` / `unmatched_rows` / `match_rate_pct` / `by_date`, 앵커 매칭률, (야간 모드) `lag_minutes`·`matches`·`unmatched_reasons` |
 
 **값은 절대 이동·보간·복사되지 않습니다.** 정렬은 열들을 시간축에서 나란히 놓을
 뿐이고, 결측은 결측으로 남습니다.
+
+### 스트림 타임라인 갭 맵 (v0.3)
+
+```python
+gap = align_streams(streams, mode="overnight_morning")
+gap_map = build_timeline_gap_map(streams, gap.report)
+gap_map["summary"]["per_stream"]["oura_night.json"]["longest_gap_days"]
+```
+
+전체 관측의 첫날부터 마지막 날까지 **일자×스트림 격자**를 만들고 각 칸을
+`matched`(모든 행 결합) · `partial`(일부 결합) · `unmatched`(행은 있으나 미결합) ·
+`missing`(그날 관측 없음)으로 표시합니다. 스트림별 결측일·최장 연속 결측·결합률,
+관측 커버리지가 함께 나오고 JSON 번들의 `timeline_gap_map`·Excel `GapMap` 시트·
+워크벤치 패널이 같은 값을 씁니다. **구멍은 구멍으로 보고하고 메우지 않습니다.**
 
 ## 6. 지표 정의
 
@@ -243,9 +285,17 @@ align_streams(streams, tolerance_minutes=30, mode="tolerance", anchor=None,
 - 기본 쌍: PM2.5×SBP/DBP/MAP/RMSSD/SDNN, 녹지×SBP/RMSSD, 기온×HR/SBP, 습도×HR, `env_load`×SBP/RMSSD
 - 경고: 상관은 인과가 아니며, 자기상관이 있는 시계열은 실효 표본이 줄어 p가 실제보다 작아집니다.
 
+### 다중 비교 보정 (v0.3)
+- 비교표에 오르는 지표(SBP·DBP·MAP·PP·HR·RMSSD·SDNN·`env_load`)는 **한 가족**으로 취급합니다.
+- `benjamini_hochberg(p)` — BH-FDR q-값(`q_value_bh`), 오름차순 p에 `q_(i) = min_{j≥i} m·p_(j)/j`, 단조·0–1 절단
+- `holm_bonferroni(p)` — Holm 보정 p(`p_holm`), `p_holm_(i) = max_{j≤i} min(1, (m−j+1)·p_(j))`
+- 원 p 옆에 둘을 함께 보고하고 `significant_fdr_05` 플래그와 가족 크기 `m`을 번들·Markdown·Excel에 남깁니다. 입력 순서를 보존하고, 계산할 수 없는 지표(NaN)는 가족 크기에서 제외합니다.
+- 두 방법이 다른 결론을 내면 **둘 다** 보고합니다(유리한 쪽만 고르지 않음).
+
 t 분포와 정규화 불완전 베타 함수는 직접 구현했고, SciPy가 있으면 테스트에서
 `ttest_ind` · `ttest_rel` · `mannwhitneyu` · `wilcoxon` · `pearsonr` · `spearmanr` ·
-`linregress`와 값이 일치하는지 대조합니다.
+`linregress` · `false_discovery_control`과, statsmodels가 있으면 `multipletests(holm)`과
+값이 일치하는지 대조합니다.
 
 ## 8. 데이터 품질(QC)
 
@@ -261,27 +311,33 @@ t 분포와 정규화 불완전 베타 함수는 직접 구현했고, SciPy가 �
 
 ## 9. 내보내기
 
-- **Excel(.xlsx)** — `README` 시트 + 데이터 10개 시트(`Summary` · `Quality` ·
-  `Alignment` · `Conditions` · `Exposure` · `Comparison` · `Daily` · `Correlations` ·
-  `Methodology` · `Readings`)
-- **Markdown(.md)** — 6장 리포트: 데이터·품질 / 요약 지표 / 조건별 비교 / 환경 상관 /
-  조건별 평균 / 지표 정의와 경계. 표와 근거 구분(measured·derived·exploratory)을 그대로 담습니다.
+- **Excel(.xlsx)** — `README` 시트 + 데이터 11개 시트(`Summary` · `Quality` ·
+  `Alignment` · `GapMap` · `Conditions` · `Exposure` · `Comparison` · `Daily` ·
+  `Correlations` · `Methodology` · `Readings`)
+- **Markdown(.md)** — 7장 리포트: 데이터·품질 / 요약 지표 / 조건별 비교(BH·Holm 열) /
+  환경 상관 / **스트림 타임라인 갭 맵** / 조건별 평균 / 지표 정의와 경계. 표와 근거
+  구분(measured·derived·exploratory)을 그대로 담습니다.
 - **CSV** — 표준 테이블(UTF-8 BOM, Excel에서 한글 바로 열림) 또는 시트별 폴더
-- **JSON** — `schema_version: "0.2.0"` 번들: 파라미터, 표본 수, 경고, 정렬 보고,
-  통계 결과, 지표 정의 전체. 재현에 필요한 것이 모두 들어 있습니다.
+- **JSON** — `schema_version: "0.3.0"` 번들: 파라미터, 표본 수, 경고, 정렬 보고,
+  **`timeline_gap_map`**, **다중 비교(BH q · Holm p · 가족 크기)**, 통계 결과, 지표 정의
+  전체. 재현에 필요한 것이 모두 들어 있습니다.
 
 ## 10. 웹 워크벤치
 
 `https://sunbear5020.github.io/heartmetric/` — 설치 없이 브라우저에서 실행됩니다.
 
 - **다중 파일 결합 업로드**: 혈압 CSV + Oura JSON + 환경 CSV를 한 번에 올리고
-  허용 오차(0 / 15 / 30 / 60 / 120분 또는 일별)를 고른 뒤 결합. 스트림별 결합/미결합
-  행 수와 매칭률을 화면에 표시합니다.
-- **비교 모드 전환**: 독립표본(Welch) ↔ `subject_id` 대응표본(대응 t + d_z + 순열 p)
+  허용 오차(0 / 15 / 30 / 60 / 120분), 일별 집계, 또는 **야간(Oura) → 아침 커프**
+  프리셋을 고른 뒤 결합. 스트림별 결합/미결합 행 수와 매칭률, 프리셋의 lag 중앙값·
+  미결합 사유를 화면에 표시합니다.
+- **스트림 타임라인 갭 맵**: 일자×스트림 격자에 매칭/부분/미결합/결측을 색으로 구분하고
+  칸마다 툴팁(행 수·결합 행·과목·상태)을 붙입니다.
+- **비교 모드 전환**: 독립표본(Welch) ↔ `subject_id` 대응표본(대응 t + d_z + 순열 p),
+  비교표에 **BH-FDR q 열**과 Holm 보정 p를 함께 표시
 - **환경 산점도**: PM2.5·녹지·기온·습도·환경부하 × SBP/DBP/HR/RMSSD/SDNN, 회귀선과
   r · ρ · 기울기 p 표시
 - **지표 정의 패널**: 실측 / 파생 / 탐색 구분과 수식·경계
-- **내보내기**: 정리된 CSV · JSON 번들(schema 0.2.0) · Markdown 리포트
+- **내보내기**: 정리된 CSV · JSON 번들(schema 0.3.0) · Markdown 리포트
 - 100% 브라우저 로컬 실행. 파일은 페이지를 떠나지 않습니다.
 - 엔진과 같은 정의를 JavaScript로 옮겨 두어 같은 파일·같은 허용 오차에서 같은 수치가 나옵니다.
 
@@ -305,12 +361,13 @@ python3 -m http.server 8000
 - 커프 혈압은 간헐 측정입니다. 야간 하강률은 ABPM 수준의 연속 측정이 아니면
   잡음이 큽니다. 표본 수(`n_day`, `n_night`)를 항상 함께 보고하십시오.
 - Oura 야간 집계는 03:00으로 배치됩니다 — 실제 수면 구간의 평균이라는 점을
-  기억해야 합니다. 그래서 야간 집계와 아침 커프 값을 결합할 때는 `daily` 모드나
-  넓은 허용 오차가 맞습니다.
+  기억해야 합니다. 그래서 야간 집계와 아침 커프 값을 결합할 때는 `overnight_morning`
+  프리셋(아침 앵커 + 직전 14시간)이 맞고, 결합된 값의 `lag_minutes`를 함께 읽으십시오.
 - 환경 변수는 개인 노출이 아니라 측정 지점의 대표값입니다. 실내·실외 이동을
   구분하지 않습니다.
-- 상관분석은 공변량(활동량·수면·계절·개인차)을 보정하지 않습니다. 다중비교 보정도
-  하지 않으므로 p값은 탐색적으로 읽으십시오.
+- 상관분석은 공변량(활동량·수면·계절·개인차)을 보정하지 않습니다. 비교표의 p는
+  BH-FDR·Holm 보정치를 함께 보고하지만, 상관표와 다른 분석 가족의 p는 보정하지
+  않습니다. 지표를 더 넣으면 가족 크기가 바뀌므로 q도 바뀝니다.
 - 이 소프트웨어는 의료기기가 아니며 진단·치료를 대체하지 않습니다.
 - 건강 데이터는 민감정보입니다. 연구 이용 시 IRB 승인과 가명처리 계획이 먼저입니다.
 
@@ -320,7 +377,7 @@ MIT License · Copyright (c) 2026 FEI · HEL Lab, Gyeongsang National University
 
 ```
 FEI · HEL Lab, Gyeongsang National University. (2026).
-HEARTMETRIC: Environmental Cardiovascular Response Platform (v0.2.0) [Software].
+HEARTMETRIC: Environmental Cardiovascular Response Platform (v0.3.0) [Software].
 https://github.com/sunbear5020/heartmetric
 ```
 
@@ -333,4 +390,4 @@ https://github.com/sunbear5020/heartmetric
 `.github/workflows/` 경로 쓰기를 허용하지 않아 템플릿으로 보관합니다.
 GitHub 웹에서 이 파일을 `.github/workflows/ci.yml`로 옮기면(내용 그대로)
 Actions가 다음 푸시부터 자동으로 돕니다. 로컬에서는 `python -m pytest`가 같은
-검사입니다(87 tests).
+검사입니다(124 tests).

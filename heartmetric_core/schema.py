@@ -228,12 +228,34 @@ def canonical_metric_name(value: object) -> str | None:
     return METRIC_NAME_MAP.get(key) if key else None
 
 
+def _is_missing_value(value: object) -> bool:
+    """Missing for a label column: None, NaN, pandas NA/NaT, and their text forms.
+
+    pandas 3 stores object columns in a string dtype whose missing value is
+    ``pd.NA``; ``str(pd.NA)`` is ``"<NA>"``, which must never become a subject id
+    or a condition label.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"", "nan", "none", "null", "-", "<na>", "nat"}
+    if isinstance(value, float):
+        return value != value
+    try:
+        import pandas as pd
+
+        result = pd.isna(value)
+    except (ImportError, TypeError, ValueError):
+        return False
+    return bool(result) if isinstance(result, bool) else False
+
+
 def normalize_subject(value: object) -> str | None:
     """Keep a subject identifier as a trimmed string (never a number)."""
-    if value is None:
+    if _is_missing_value(value):
         return None
     text = str(value).strip()
-    if not text or text.lower() in {"nan", "none", "null", "-", "<na>"}:
+    if not text:
         return None
     if text.endswith(".0") and text[:-2].isdigit():
         text = text[:-2]
@@ -242,10 +264,10 @@ def normalize_subject(value: object) -> str | None:
 
 def normalize_condition(value: object) -> str | None:
     """Map a condition label onto a canonical code, keeping unknown labels."""
-    if value is None:
+    if _is_missing_value(value):
         return None
     text = str(value).strip()
-    if not text or text.lower() in {"nan", "none", "null", "-"}:
+    if not text:
         return None
     key = normalize_key(text)
     if key in _CONDITION_LOOKUP:

@@ -136,7 +136,7 @@ def test_analyze_streams_returns_alignment_block(tmp_path):
     bundle = pipeline.analyze_streams([str(bp), str(env)], tolerance_minutes=10)
     assert bundle["alignment"]["mode"] == "tolerance"
     assert bundle["meta"]["alignment"]["anchors_matched"] == 2
-    assert bundle["meta"]["schema_version"] == "0.2.0"
+    assert bundle["meta"]["schema_version"] == "0.3.0"
     assert bundle["quality"]["rows_out"] == 2
 
 

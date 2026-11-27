@@ -46,6 +46,15 @@ REFERENCES: Dict[str, str] = {
     "spearman": "Spearman rank correlation with average ranks for ties; p uses the same t approximation",
     "ols": "Ordinary least squares y = b0 + b1·x; slope tested with t = b1/SE(b1), df = n − 2",
     "mann_whitney": "Mann–Whitney U with tie-corrected normal approximation (two-sided)",
+    "benjamini_hochberg": "Benjamini, Y. & Hochberg, Y. (1995). Controlling the false discovery rate: "
+    "a practical and powerful approach to multiple testing. Journal of the Royal Statistical Society B 57(1):289–300",
+    "holm_bonferroni": "Holm, S. (1979). A simple sequentially rejective multiple test procedure. "
+    "Scandinavian Journal of Statistics 6(2):65–70",
+    "overnight_morning": "Alignment preset, not a statistic: the anchor is a morning cuff reading and only rows "
+    "recorded before it (default 14 h look-back) may join — the shape of an Oura nightly aggregate "
+    "(placed at 03:00 of its day) plus a post-waking cuff; Oura API v2 has no blood-pressure endpoint",
+    "timeline_gap_map": "Coverage audit of the aligned table: rows written and rows joined per stream and "
+    "calendar day, with missing days reported as missing (no interpolation, no shifting, no filling)",
 }
 
 METHODOLOGY: Dict[str, Dict[str, Any]] = {
@@ -312,6 +321,43 @@ METHODOLOGY: Dict[str, Dict[str, Any]] = {
         "formula": "b1 = Σ(x−x̄)(y−ȳ)/Σ(x−x̄)², b0 = ȳ − b1·x̄",
         "reference": REFERENCES["ols"],
         "boundary": "관측 범위 밖으로 외삽하지 않습니다. 다중 공변량(활동량·수면·계절)은 보정하지 않습니다.",
+    },
+    # ------------------------------------------------- v0.3 multiple comparison
+    "benjamini_hochberg": {
+        "label": "BH-FDR 보정 q-값",
+        "unit": "q (adjusted p, 0–1)",
+        "kind": "derived",
+        "device": None,
+        "formula": "오름차순 p_(i)에 대해 q_(i) = min_{j≥i} ( m · p_(j) / j ), 0–1로 절단; q ≤ 0.05면 FDR 5%에서 유의",
+        "reference": REFERENCES["benjamini_hochberg"],
+        "boundary": "같은 표에서 동시에 검정한 지표 수 m이 기준입니다. 지표를 추가·제거하면 q가 바뀌므로, 표에 없는 지표를 \"검정하지 않은 것\"으로 읽지 마세요. FDR은 거짓 발견의 기대 비율을 통제하며 가족 단위 오류율(FWER)보다 덜 보수적입니다.",
+    },
+    "holm_bonferroni": {
+        "label": "Holm–Bonferroni 보정 p",
+        "unit": "p_holm (0–1)",
+        "kind": "derived",
+        "device": None,
+        "formula": "오름차순 p_(i)에 대해 p_holm_(i) = max_{j≤i} min(1, (m − j + 1) · p_(j)); p_holm ≤ 0.05면 FWER 5%에서 유의",
+        "reference": REFERENCES["holm_bonferroni"],
+        "boundary": "Bonferroni보다 검정력이 높지만 BH-FDR보다 보수적입니다. 두 보정이 다른 결론을 내면 \"보정 방법에 따라 달라진다\"고 보고해야 하며, 유리한 쪽만 골라 쓰지 않습니다.",
+    },
+    "overnight_morning": {
+        "label": "야간 → 아침 커프 결합 (overnight_morning)",
+        "unit": "align (n rows, lag minutes)",
+        "kind": "derived",
+        "device": None,
+        "formula": "anchor = 05:00–12:00의 커프 행; 동일 subject_id의 다른 스트림 행 중 0 ≤ (anchor − 관측) ≤ 14시간인 행을 가장 가까운 것부터 역할별 1개씩 결합",
+        "reference": REFERENCES["overnight_morning"],
+        "boundary": "결합은 열을 나란히 놓는 일이며 값을 옮기거나 보간하지 않습니다. 야간 집계는 실제 수면 구간의 평균이고 03:00에 배치된 값이므로 lag_minutes를 항상 함께 읽으세요. 14시간 밖의 관측은 결합하지 않고 미결합 사유로 남깁니다.",
+    },
+    "timeline_gap_map": {
+        "label": "스트림 타임라인 갭 맵",
+        "unit": "date × stream cell",
+        "kind": "derived",
+        "device": None,
+        "formula": "cell.status = matched(모든 행 결합) · partial(일부 결합) · unmatched(행은 있으나 미결합) · missing(그날 관측 없음); span은 전체 관측의 첫날–마지막날",
+        "reference": REFERENCES["timeline_gap_map"],
+        "boundary": "관측이 없는 칸은 결측이며 보간·대체하지 않습니다. 스트림마다 관측 기간이 다르면 앞뒤 칸이 missing으로 보이는 것은 정상이며, 그 자체가 \"그 날 그 스트림이 없었다\"는 정보입니다.",
     },
 }
 

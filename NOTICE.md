@@ -28,12 +28,24 @@ HEARTMETRIC does **not** obtain blood pressure from a ring or a watch.
 - Nightly Oura aggregates are placed at 03:00 local time of their `day`. No
   per-beat data is reconstructed.
 - **Time alignment never moves a value.** `align.align_streams` joins separate
-  streams on a tolerance the researcher chooses (±0–120 min, or a daily
-  aggregate). A metric is copied into a row only from a row of the same subject
-  within that tolerance; colliding values are dropped rather than overwritten,
-  unmatched rows are kept and flagged `align_unmatched`, and nothing is
-  interpolated or shifted in time. The per-stream match counts are exported with
-  every result so a reader can see how much of the table was actually joined.
+  streams on a tolerance the researcher chooses (±0–120 min, a daily aggregate,
+  or the v0.3 `overnight_morning` preset). A metric is copied into a row only
+  from a row of the same subject within that window; colliding values are
+  dropped rather than overwritten, unmatched rows are kept and flagged
+  `align_unmatched`, and nothing is interpolated or shifted in time. The
+  per-stream match counts are exported with every result so a reader can see how
+  much of the table was actually joined.
+- **The overnight preset looks backwards only.** `mode="overnight_morning"`
+  anchors on a morning cuff reading (default 05:00–12:00) and may attach only
+  rows recorded at or before it and within the look-back (default 14 h, one row
+  per stream role). The lag of every match is written into the report and a
+  reading taken after the cuff is never pulled back onto it.
+- **A gap is reported, not filled.** `align.build_timeline_gap_map` states per
+  day and per stream how many rows were written and how many joined. A day with
+  no observation is `missing`; no value is carried forward from another day.
+- **Multiple comparisons are stated, not hidden.** Every comparison table is one
+  family: the raw p is reported beside Holm-adjusted p and Benjamini–Hochberg q
+  (Holm 1979; Benjamini & Hochberg 1995), with the family size in the bundle.
 
 ## 2. No affiliation
 
@@ -68,7 +80,7 @@ approval and a de-identification plan before HEARTMETRIC is pointed at it.
 ## 6. Citation
 
     FEI · HEL Lab, Gyeongsang National University. (2026).
-    HEARTMETRIC: Environmental Cardiovascular Response Platform (v0.2.0) [Software].
+    HEARTMETRIC: Environmental Cardiovascular Response Platform (v0.3.0) [Software].
     https://github.com/sunbear5020/heartmetric
 
 Contact: bkim5020@gnu.ac.kr
